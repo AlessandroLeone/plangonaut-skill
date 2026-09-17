@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0-alpha.4
+
+- **Public metadata, corrected.** `0.3.0-alpha.3` reached the registry from a tarball that had been
+  packed before this repository was named and was afterwards retired: the published package has no
+  `repository`, no `bugs`, and a README that links to no source. This release carries all three.
+  `0.3.0-alpha.3` is not withdrawn and is not broken - its runtime is the same engine - but it is
+  superseded, and npm does not let a version be republished with different bytes.
+- **Studio has a mark.** The desktop application shipped a placeholder beaver; it now carries the
+  Plangonaut symbol, in the finish each theme needs, and its native icon is a plate derived from that
+  symbol so it survives a taskbar whose colour the application does not choose.
+- The engine, the skill and the schemas are unchanged from `0.3.0-alpha.3`.
+
 ## 0.3.0-alpha.3
 
 - One version across the product. The skill and the CLI were on `0.3.0-alpha.2` while Studio and its
