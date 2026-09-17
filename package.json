@@ -42,6 +42,13 @@
     "claude",
     "gemini"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlessandroLeone/plangonaut-skill.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AlessandroLeone/plangonaut-skill/issues"
+  },
   "homepage": "https://plangonaut.com",
   "license": "Apache-2.0",
   "private": false,

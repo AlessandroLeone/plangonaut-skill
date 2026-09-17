@@ -47,6 +47,15 @@ Provide the skill/references or Portable Edition to the chosen host. Establish m
 - [Runtime and distribution](skills/plangonaut/references/runtime-compatibility.md)
 - [Behavioral evaluation scenarios](tests/scenarios/complete-project-preparation.md)
 
+## Where this lives
+
+Public source and issues: [github.com/AlessandroLeone/plangonaut-skill](https://github.com/AlessandroLeone/plangonaut-skill).
+The package on npm is `plangonaut`; the website is [plangonaut.com](https://plangonaut.com).
+
+Development happened under the project’s earlier name until 2026-09-17, in
+`AlessandroLeone/beave-skill`. That repository is kept for its history and is no longer a
+release destination.
+
 ## Ownership and boundaries
 
 Public skill/core/CLI sources are Apache-2.0. Website and Studio source remain private. Base Studio reads, edits and visualizes project files; assisted review, linked-file change impact and reconciliation are future optional subscription features. Semantic/CLI handling of corrections remains free.
