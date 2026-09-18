@@ -1,5 +1,101 @@
 # Changelog
 
+## 0.3.0-alpha.5
+
+The first real pilot -- a whole planning session on an actual project, not a
+laboratory run -- found ten defects. Two of them are structural and touch what
+Plangonaut is for. This release closes all ten.
+
+**A document written outside the ledger is now found.** The pilot's most
+important document, its architecture, was written by hand straight to
+`docs/...-v1.md`: no digest, no revision, nothing able to notice it being
+changed, and `validate` answered *"Plangonaut state is valid."* for the whole
+session. Plangonaut cannot stop an agent writing a file -- it has a filesystem
+and a shell -- so the lever is detection, and the agent's own mistake makes it
+cheap: a `*-v<N>.md` file that no artifact claims is the shape of somebody who
+followed the naming convention the skill asks for and skipped the command that
+implements it. `validate` reports it; `--strict` refuses on it; `plangonaut
+govern --exclude` records a deliberate exception with its reason. Documentation
+that predates `init`, conventional repository files and dependency directories
+are never reported.
+
+And the repair runs, which it did not at first: `doc-save` refused to overwrite
+an untracked working file, including the one it was being asked to adopt.
+Identical bytes are now adopted rather than overwritten. Different bytes are
+still refused -- they may be somebody else's.
+
+**One rule for every file that enters a permanent record.** There were three
+copies of the check and one hole. `override` had none, so it accepted a path
+`reconcile` refuses, and an override was recorded against a file in a temporary
+directory: accepted on the day, refused days later, by which time the file and
+the override's own text could have been gone. `override`, `reconcile`, `gate`,
+`evidence`, the blocker ledger and `re-record` now share one validation.
+
+**A repair command stops dictating its own defect back.** `validate` used to
+suggest `re-record --source-file <the path it had just rejected>`. It now uses a
+placeholder and says to bring the file in first; a portable path whose file is
+merely missing keeps its path, because there restoring it is the fix.
+
+**A question the engine planned is not a question to supersede.** `qa-settle
+--next-id` writes the next question as `PLANNED`; `qa-ask` then met it and
+advised `qa-supersede`, which fabricates a correction chain on a question never
+put to anybody. It happened three times in one session. The refusal now names
+the entry's status and the action the protocol defines for it.
+
+**A module with work on it is no longer `NOT STARTED`.** Nine questions and
+answers sat under module 1 while module 1 read `NOT STARTED` and `coverage` read
+`1/17` -- not conservative, false, and it also left `next` stuck proposing
+questions the history had already answered. The one automatic transition is
+`NOT STARTED` to `IN DISCUSSION`, forward only. Confirming a module stays a
+judgement somebody makes.
+
+**`next` reads the ledger before the catalogue**: an answer not yet applied, then
+a question waiting, then one already `PLANNED`, then the catalogue -- each with
+why it comes before the rest. It also names an unopened prerequisite of the
+module it proposes.
+
+**Depth without coverage is reported (structural).** Six rounds of the pilot went
+into one module, down to JSON schema and single-function detail, while sixteen of
+seventeen modules had never been opened -- and every command answered OK. The
+architecture produced there was designed without knowing what language it would
+be written in, which is a decision in another module and can invalidate it.
+`status` and `next` now report the imbalance with the threshold that triggered
+it, and the skill requires the choice to be put to the user and recorded. It
+never refuses the deep dive.
+
+**The folder has to be enough for somebody who was not there (structural).**
+`project-verify` proves a package arrived whole and has nothing to say about
+whether it is sufficient: a governed document resting its entire technical
+foundation on files under an absolute path passes it without a remark. The new
+`plangonaut handoff-check` asks the other question, separating blocking findings
+from advisory ones. A reference out of the folder is brought in, summarised in
+place, or marked `(external dependency)`, `(historical reference)`, `(example)`
+or `(informative)` -- only an unqualified one blocks.
+
+**Smaller things that were costing something anyway.** `--help` on any command,
+and the whole document flow on `doc-save --help`, including what the confirmation
+token is bound to and that it has no expiry. `doc-save`'s mandatory
+`--confirm-token` in the usage line, where it was missing while being required. A
+missing-token refusal that prints the `doc-diff` to run, with this save's own
+arguments in it. `--operation-id` in every published example, held there by a
+test that reads the documentation and checks it against the real parser. Backups
+of project files under `.plangonaut/backups/documents/` instead of a `backups/`
+directory in the project root; existing ones are reported and moved only by
+`plangonaut migrate-backups --apply`, verified by digest and with a receipt.
+`init` adds exactly two lines to `.gitignore` and never the record itself. A
+standing notice is given in full once and briefly afterwards, with a count, and
+keeps the half of it that changes.
+
+**Compatibility.** `document_governance` is additive and optional: a project
+written by an earlier engine is valid, and is read as having recorded nothing
+about its folder -- which is why only the high-precision `-vN` signal applies to
+it. No event type is removed, no stored digest is rewritten, and replay is
+unchanged: the automatic module transition is carried by the state patch that
+every event already verifies against itself. Nothing migrates on its own.
+
+**Prepared locally. Not published**: no npm publish, no dist-tag change, no tag,
+no GitHub Release, no upload, no deployment.
+
 ## 0.3.0-alpha.4
 
 - **Public metadata, corrected.** `0.3.0-alpha.3` reached the registry from a tarball that had been
