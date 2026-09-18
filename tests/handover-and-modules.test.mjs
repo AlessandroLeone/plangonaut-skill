@@ -64,7 +64,7 @@ function scratch(t) {
   return base;
 }
 
-function project(t, name = "Handover") {
+function project(t, name = "Handover", interactionMode = "Standard") {
   const root = path.join(scratch(t), "project");
   fs.mkdirSync(root, { recursive: true });
   fs.writeFileSync(
@@ -73,7 +73,7 @@ function project(t, name = "Handover") {
   );
   ok(root, [
     "init", "--project-root", root, "--project-name", name,
-    "--project-mode", "Resume", "--interaction-mode", "Standard",
+    "--project-mode", "Resume", "--interaction-mode", interactionMode,
     "--owners-file", path.join(root, "owners.json"),
   ]);
   return root;
@@ -883,7 +883,10 @@ test("the engine recognises its own sentence, so a settled question does not fre
 // ---------------------------------------------------------------------------
 
 test("settling one question while others are open does not announce that none are", (t) => {
-  const root = project(t, "StillOpen");
+  // Expert, because three questions have to be open at once for this to have a
+  // plural to get wrong, and Standard now refuses to put three to somebody in a
+  // single turn. The subject of the test is the announcement, not the pacing.
+  const root = project(t, "StillOpen", "Expert");
   const ask = (id, question) => ok(root, [
     "qa-ask", "--project-root", root, "--id", id, "--question", question,
     "--rationale", "It decides what the project is for.", "--owner", "Ada",

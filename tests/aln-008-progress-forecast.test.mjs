@@ -82,6 +82,8 @@ const BASE = {
   confidence: "MEDIA",
   "confidence-reason": "due responsabili non sono ancora identificati",
   "cycle-state": "REGOLARE",
+  // Who is estimating: an agent's projection, not a commitment anyone made.
+  author: "agent",
 };
 
 describe("D5 scenario 1: a forecast that grows between two updates keeps the reason", () => {

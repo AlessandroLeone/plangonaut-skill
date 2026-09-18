@@ -168,6 +168,44 @@
           "owner": {
             "type": "string"
           },
+          "provenance": {
+            "$comment": "Who approved it, and where a reader can go and see them do it. Not required, and deliberately: a decision written by an earlier engine has none, and inventing one would be the exact defect this field exists to catch. Absent on an APPROVED decision is reported by `validate`, fails `--strict` and blocks `handoff-check`; it is never repaired in place.",
+            "type": "object",
+            "required": [
+              "kind",
+              "ref",
+              "authority",
+              "at"
+            ],
+            "properties": {
+              "kind": {
+                "$comment": "interview: a settled question whose recorded answer names this decision. override: a recorded override. statement: a file inside the project, in the decider's own words.",
+                "enum": [
+                  "interview",
+                  "override",
+                  "statement"
+                ]
+              },
+              "ref": {
+                "$comment": "The question id, the override id, or the project-relative path of the statement.",
+                "type": "string",
+                "minLength": 1
+              },
+              "authority": {
+                "type": "string",
+                "minLength": 1
+              },
+              "at": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "$comment": "Present for a statement: the digest of the file the approval points at, so a later reader can tell whether the words it rests on are still the same words.",
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          },
           "revision": {
             "type": "integer"
           },
@@ -1152,6 +1190,13 @@
         "recorded_by": {
           "type": "string",
           "minLength": 1
+        },
+        "authored_by": {
+          "$comment": "Whose numbers these are: an agent's estimate, or a person's commitment. `recorded_by` is the owner under whose authority the command ran, which is a different fact and was being read as though it were this one. Not required: a project written before this distinction records neither, and absent means unknown rather than human.",
+          "enum": [
+            "agent",
+            "human"
+          ]
         },
         "recorded_at": {
           "type": "string",

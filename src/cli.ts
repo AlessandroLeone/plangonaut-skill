@@ -327,6 +327,17 @@ interface ProgressForecast {
   cycle_state: string;
   change_reason: string | null;
   recorded_by: string;
+  /**
+   * Whose numbers these are: the agent's estimate, or the user's commitment.
+   *
+   * `recorded_by` is the owner under whose authority the command ran, which is
+   * not the same fact and was being read as though it were. A forecast an agent
+   * produced then appeared in the folder as a statement by a person — ranges,
+   * confidence, loop risk and all — and the next reader had no way to tell an
+   * estimate from an undertaking. Optional, because a project written before
+   * this release records neither, and absent means unknown rather than human.
+   */
+  authored_by?: "agent" | "human";
   recorded_at: string;
   state_revision: number;
   derived: ForecastDerived;
@@ -533,11 +544,11 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   // are what the engine counted, not what the caller asserted.
   forecast: [
     "project-root", "owner", "phase", "known-work", "conditional-work", "questions", "operations",
-    "cycles", "confidence", "confidence-reason", "cycle-state", "change-reason", "expected-revision",
-    "operation-id",
+    "cycles", "confidence", "confidence-reason", "cycle-state", "change-reason", "author",
+    "expected-revision", "operation-id",
   ],
   gate: ["project-root", "id", "status", "evidence-file", "owner", "consequence", "review-date", "operation-id"],
-  decision: ["project-root", "id", "title", "name", "status", "severity", "owner", "from", "to", "type", "file", "next-action", "expected-revision", "operation-id"],
+  decision: ["project-root", "id", "title", "name", "status", "severity", "owner", "from", "to", "type", "file", "next-action", "provenance-override", "provenance-note", "expected-revision", "operation-id"],
   requirement: ["project-root", "id", "title", "name", "status", "severity", "owner", "from", "to", "type", "file", "next-action", "expected-revision", "operation-id"],
   task: ["project-root", "id", "title", "name", "status", "severity", "owner", "from", "to", "type", "file", "next-action", "expected-revision", "operation-id"],
   dependency: ["project-root", "id", "title", "name", "status", "severity", "owner", "from", "to", "type", "file", "next-action", "expected-revision", "operation-id"],
@@ -3503,6 +3514,7 @@ function forecastMarkdown(state: State, historyEntries = 0): string[] {
     `- Confidence: ${entry.confidence} — ${entry.confidence_reason}`,
     `- Cycle state, as recorded by the caller: ${entry.cycle_state}`,
     `- Recorded by ${entry.recorded_by} at ${entry.recorded_at}, state revision ${entry.state_revision}`,
+    `- These numbers are ${entry.authored_by === "agent" ? "**an agent's estimate**, not a commitment anyone made" : entry.authored_by === "human" ? "**a person's commitment**" : "of unrecorded authorship: this project predates the distinction, so whether they are an estimate or an undertaking is not known"}`,
     `- Why it changed: ${entry.change_reason ?? "first forecast recorded for this project"}`,
     `- Counted by the engine from the ledgers: open blockers ${entry.derived.open_blockers}${blockerZeroCaveat(state, entry.derived.open_blockers)}, open overrides ${entry.derived.open_overrides}, gates remaining ${entry.derived.gates_remaining}, unresolved modules ${entry.derived.unresolved_modules.length}, open findings ${entry.derived.open_findings ?? 0}, tasks ${TASK_STATUSES.map((status) => `${status} ${entry.derived.tasks_by_status?.[status] ?? 0}`).join(", ")}`
   );
@@ -4261,7 +4273,21 @@ function reRecord(flags: Flags): void {
     const sourcePath = path.resolve(required(flags, "source-file"));
     const candidate = path.relative(root, sourcePath);
     const confined = existingFileInside(root, candidate);
-    if (!confined) throw new PlangonautError(`The new source must be an existing file inside the project root: ${sourcePath}`);
+    if (!confined) {
+      // The one place the engine tells the caller what to type, so the one place
+      // a wrong suggestion is guaranteed to be followed. It names why the path
+      // cannot be used and asks for a different file; it never echoes back the
+      // path it has just refused, and the previous source stays in
+      // `source_history` either way.
+      throw new PlangonautError(
+        `The new source must be an existing file inside the project root, and \`${candidate}\` is not: ` +
+        `an absolute path, one climbing out with "..", a symbolic link resolving outside, or a file that is not there ` +
+        `all put the record beyond the folder that travels with it, which is the whole reason this command exists.\n` +
+        `Copy or write the file into the project first, then name it relative to the root:\n` +
+        `  plangonaut re-record --project-root . --kind ${kind} --id ${id} --source-file ${PORTABLE_SOURCE_PLACEHOLDER} --owner <owner> --reason "<why the source changed>" --operation-id <id>\n` +
+        `What is recorded now is kept: ${previousPath ? `${label} still stands on ${previousPath}` : `${label} records no source yet`}, and nothing was written.`
+      );
+    }
     const bytes = fs.readFileSync(confined);
     if (!bytes.length || !bytes.toString("utf8").trim()) throw new PlangonautError(`The new source cannot be empty: ${candidate}`);
     relative = candidate.replaceAll("\\", "/");
@@ -4373,6 +4399,25 @@ function forecast(flags: Flags): void {
   const owner = required(flags, "owner").trim();
   assertKnownOwner(state, owner);
 
+  /*
+   * Who is making this estimate has to be said, not inferred from who ran the
+   * command. An agent's forecast and a person's commitment are different
+   * claims, and the folder was recording them identically.
+   */
+  const authoredRaw = nonEmpty(flags.author) ? String(flags.author).trim().toLowerCase() : null;
+  if (authoredRaw !== null && authoredRaw !== "agent" && authoredRaw !== "human") {
+    throw new PlangonautError(`--author must be agent or human; got ${flags.author}. Nothing was written.`);
+  }
+  if (authoredRaw === null) {
+    throw new PlangonautError(
+      `--author is required: say whether these numbers are the agent's estimate or the user's commitment.\n` +
+      `  --author agent   a projection you produced. It is a reading, and the next agent should treat it as one.\n` +
+      `  --author human   ranges a person gave or accepted. It is an undertaking.\n` +
+      `They were being recorded identically, under the owner who happened to run the command, and a reader could not tell them apart. Nothing was written.`
+    );
+  }
+  const authoredBy = authoredRaw as "agent" | "human";
+
   const previous = state.progress_forecast ?? null;
   const history = state.forecast_history ?? [];
 
@@ -4439,6 +4484,7 @@ function forecast(flags: Flags): void {
     cycle_state: cycleState,
     change_reason: previous ? changeReason : null,
     recorded_by: owner,
+    authored_by: authoredBy,
     recorded_at: timestamp,
     state_revision: revision,
     derived,
@@ -4843,6 +4889,57 @@ function ledgerPathFields(state: State): Array<{ where: string; value: string }>
   return found;
 }
 
+/**
+ * Outside references in Markdown the ledger does **not** govern.
+ *
+ * `handoff-check` read only governed documents, which meant it could report a
+ * folder as self-sufficient while a file sitting beside them pointed at half a
+ * machine. Silence about a file nobody governs reads as "checked and clean", and
+ * it was neither.
+ *
+ * These are reported separately and never as blocking, because the limit is real
+ * and worth stating rather than papering over: the file has no digest, so it can
+ * change after this check without anything noticing, and its qualifiers cannot
+ * be trusted the way a governed document's can. What the reader gets is the
+ * fact — this was looked at, here is what it says, and here is why the answer is
+ * weaker than for the documents above.
+ *
+ * The scan is the same deterministic one used everywhere: `markdownFiles`
+ * skips dependency and build directories, dot-directories, the ledger's own
+ * directories and the conventional repository files, so a README or a
+ * changelog never appears here.
+ */
+function ungovernedReferences(root: string, state: State): OutsideReference[] {
+  const governed = new Set<string>();
+  for (const artifact of state.artifacts ?? []) {
+    for (const value of [artifact.working_path, artifact.base_path]) {
+      if (nonEmpty(value)) governed.add(canonicalRelative(String(value)));
+    }
+  }
+  const view = (state as any).interview_view?.path;
+  if (nonEmpty(view)) governed.add(canonicalRelative(String(view)));
+
+  const governance = documentGovernance(state);
+  const found: OutsideReference[] = [];
+  for (const relative of markdownFiles(root)) {
+    if (governed.has(relative)) continue;
+    if (excludedFromGovernance(relative, governance.exclusions)) continue;
+    const basename = path.basename(relative).replace(/\.md$/i, "").toLowerCase();
+    if (UNGOVERNED_BASENAMES.has(basename)) continue;
+    const absolute = existingFileInside(root, relative);
+    if (!absolute) continue;
+    fs.readFileSync(absolute, "utf8").split(/\r?\n/).forEach((raw, index) => {
+      const qualified = REFERENCE_QUALIFIERS.test(raw);
+      const line = raw.replace(URL_IN_TEXT, (match) => " ".repeat(match.length));
+      const candidates = [...(line.match(OUTSIDE_PATH) ?? []), ...posixInStructuredPositions(line)];
+      for (const match of [...new Set(candidates)]) {
+        found.push({ document: relative, line: index + 1, text: match, qualified, transient: TRANSIENT_LOCATION.test(match) });
+      }
+    });
+  }
+  return found;
+}
+
 function outsideReferences(root: string, state: State): OutsideReference[] {
   const found: OutsideReference[] = [];
 
@@ -4968,9 +5065,42 @@ function handoffCheck(flags: Flags): void {
     }
   }
 
-  // 7. Documents outside the ledger.
+  // 7. Documents outside the ledger, and what this check could not see in them.
   const unclaimed = unclaimedDocumentReport(root, state);
-  advisory.push(...unclaimed.findings);
+  for (const finding of unclaimed.findings) {
+    blocking.push(
+      `${finding} A folder cannot be called self-sufficient while a document in it is outside the record: it has no digest, ` +
+      `so nothing notices it changing, and this check cannot vouch for what it says. ` +
+      `Close it by recording it (doc-diff then doc-save), or declare it deliberately ungoverned with ` +
+      `plangonaut govern --exclude <path> --reason "<why>" --owner <owner> --operation-id <id>, ` +
+      `which is an owner's decision and is recorded as one. Verify with plangonaut validate --strict.`
+    );
+  }
+
+  // 8. What the ungoverned files say, and the limit on believing it.
+  const ungoverned = ungovernedReferences(root, state);
+  if (ungoverned.length) {
+    advisory.push(
+      `${ungoverned.length} reference${ungoverned.length === 1 ? "" : "s"} outside the project ${ungoverned.length === 1 ? "is" : "are"} in Markdown the ledger does not govern. ` +
+      `They are not blocking and they are not cleared: an ungoverned file has no digest, so it can change after this check without anything noticing, ` +
+      `and a qualifier written in one cannot be relied on the way a governed document's can.`
+    );
+    for (const reference of ungoverned) {
+      advisory.push(
+        `  ${reference.document}:${reference.line} — ${reference.text}` +
+        `${reference.transient ? " (a temporary location)" : ""}${reference.qualified ? " (qualified on the line, but the file is not governed)" : ""}`
+      );
+    }
+  }
+
+  // 9. Where the prose and the typed ledger disagree.
+  for (const finding of ledgerCoherenceFindings(root, state)) {
+    blocking.push(
+      `${finding} A recipient reads the documents and then goes looking in the ledger; these two do not agree, ` +
+      `so one of them is wrong and this check cannot say which. Close it by recording what the document claims, or by rewriting the claim.`
+    );
+  }
+
   advisory.push(...imbalanceLines(progress));
 
   if (flags.json === true) {
@@ -4989,6 +5119,18 @@ function handoffCheck(flags: Flags): void {
     for (const line of advisory) console.log(`- ${line}`);
   }
   console.log(`\nIntegrity and sufficiency are different questions. plangonaut validate and project-verify answer the first; this answers the second.`);
+  if (blocking.length) {
+    console.log(
+      `\nEvery blocking finding above says what was found and how to close it. Three closures exist, and they are not interchangeable:\n` +
+      `  record it      bring the thing into the ledger, so the folder carries it.\n` +
+      `  qualify it     when the reference is deliberate, mark its line "(external dependency)", "(historical reference)",\n` +
+      `                 "(example)" or "(informative)". The first says needed and not delivered; the others say not needed.\n` +
+      `  accept it      a decision, not a workaround. It belongs to the owner the concern falls under -- technical for a\n` +
+      `                 dependency, product for scope, safety for a risk -- and it is recorded as a decision with its\n` +
+      `                 provenance, not as a silenced warning. This command has no flag for accepting a finding, on purpose.\n` +
+      `Re-run plangonaut handoff-check --project-root . to verify a finding is closed.`
+    );
+  }
   if (blocking.length) throw new PlangonautError(`Handoff check failed: ${blocking.length} blocking finding${blocking.length === 1 ? "" : "s"}.`, "PROJECT_STATE_UNTRUSTED");
 }
 
@@ -6258,6 +6400,257 @@ function moduleStartedLine(moduleId: number, state: State): string {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Where a decision came from
+// ---------------------------------------------------------------------------
+
+/**
+ * The provenance an `APPROVED` decision has to have, or it is not approved.
+ *
+ * The pilot produced a folder whose documents read as settled and whose decision
+ * ledger was empty, and the reverse is just as available: a decision can be
+ * written `APPROVED` by an agent that read some code, inferred what it implied,
+ * and recorded the inference as a choice. Nothing checked that a person had ever
+ * said so.
+ *
+ * Reading a folder authorises an agent to record **facts**. It does not
+ * authorise it to turn existing code, a prototype, a comment or a previous
+ * behaviour into a future commitment. Scope, priorities, requirements, risk
+ * acceptance and preferences are the user's, and an `APPROVED` decision claims
+ * exactly that kind of assent.
+ *
+ * So approval needs a trail that can be re-read:
+ *
+ *  - **interview** — a question was put, the user answered it in their own
+ *    words, the answer was applied, and the settlement named this decision as a
+ *    consequence. All four facts are already in the ledger, so nothing new has
+ *    to be asserted: `consequences` is validated against the record ids, and
+ *    `consequences_recorded_at` is written only by the command that applies an
+ *    answer.
+ *  - **override** — a person gave a direct instruction, its text is in the
+ *    project, and its digest is recorded.
+ *
+ * Nothing else counts. An agent's own reasoning, however good, is a
+ * **proposal**, and a proposal's status is `PROPOSED`.
+ */
+interface DecisionProvenance {
+  kind: "interview" | "override" | "statement";
+  ref: string;
+  authority: string;
+  at: string;
+  /** Present for a statement: the digest of the file the approval points at. */
+  sha256?: string;
+}
+
+function findDecisionProvenance(state: State, decisionId: string): DecisionProvenance | null {
+  for (const entry of interviewLog(state)) {
+    if (!nonEmpty(entry.consequences_recorded_at)) continue;
+    if (!nonEmpty(entry.answer)) continue;
+    if (entry.status === "SUPERSEDED") continue;
+    if (!(entry.consequences ?? []).includes(decisionId)) continue;
+    return {
+      kind: "interview",
+      ref: entry.id,
+      authority: entry.owner,
+      at: String(entry.consequences_recorded_at),
+    };
+  }
+  return null;
+}
+
+/** An override, as provenance: a person's instruction, recorded with its digest. */
+function overrideProvenance(state: State, overrideId: string): DecisionProvenance | null {
+  const item = (state.human_overrides ?? []).find((entry) => entry.id === overrideId);
+  if (!item) return null;
+  return {
+    kind: "override",
+    ref: item.id,
+    authority: item.owner,
+    at: String((item as any).created_at ?? ""),
+  };
+}
+
+/**
+ * Decisions that say `APPROVED` and cannot show who approved them.
+ *
+ * Reported, never refused, and that asymmetry is the compatibility rule. A
+ * project written before this release has decisions whose provenance was never
+ * recorded; refusing them would break every existing folder to enforce a rule
+ * that did not exist when they were written. The write path refuses a *new*
+ * unprovenanced approval; this reports the ones already there, so the gap is
+ * visible and can be closed deliberately.
+ */
+function unprovenancedApprovals(state: State): string[] {
+  const found: string[] = [];
+  for (const decision of state.decisions ?? []) {
+    if (String(decision.status).toUpperCase() !== "APPROVED") continue;
+    if ((decision as any).provenance) continue;
+    if (findDecisionProvenance(state, decision.id)) continue;
+    found.push(
+      `decision ${decision.id} is APPROVED and records no provenance: no settled question names it as a consequence, and no override is cited. ` +
+      `It may be right, and nothing here can tell. Link it by settling the question it came from with --consequences ${decision.id}, ` +
+      `or re-record it with plangonaut decision --status APPROVED --provenance-override <OVR-ID>.`
+    );
+  }
+  return found;
+}
+
+/**
+ * What has to be true before a module may be called `CONFIRMED`.
+ *
+ * `CONFIRMED` is the strongest thing the ledger says about a module: it means
+ * the concerns in it are settled and the project may build on them. The pilot
+ * showed how cheaply it could be reached — one command with an evidence file,
+ * where the evidence could be a summary the agent had just written about its own
+ * reading. A document exists, therefore the module is confirmed. That is not a
+ * confirmation, it is a restatement.
+ *
+ * So three things are checked, all of them already in the ledger and none of
+ * them a matter of opinion:
+ *
+ *  - **no blocking question.** A question on that module that is planned, asked,
+ *    or answered without its consequences applied is an open loop. Confirming
+ *    over it buries it.
+ *  - **the decisions it produced are approved.** A settled question on the
+ *    module names its consequences; a decision among them still `PROPOSED` is a
+ *    choice nobody has made.
+ *  - **those approvals have provenance.** Otherwise the chain terminates in an
+ *    agent's inference, which is where this whole class of defect starts.
+ *
+ * Evidence and owner were already required and still are. What is deliberately
+ * *not* checked is whether the answers are any good: that is judgement, it
+ * belongs to the person confirming, and a check that pretended to it would be
+ * the same overreach in the opposite direction.
+ */
+function moduleConfirmationBlockers(state: State, moduleId: number): string[] {
+  const blockers: string[] = [];
+  const entries = interviewLog(state).filter((entry) => entry.module === moduleId);
+
+  /*
+   * The emptiest case, and the one the synthetic pilot walked straight into: a
+   * module with nothing recorded against it at all, confirmed by handing the
+   * command a summary the agent had just written about its own reading.
+   *
+   * Every other blocker below asks whether the work on a module is finished.
+   * This one asks whether any happened. `CONFIRMED` says the project may build
+   * on this module; a module nobody asked anything about supports nothing.
+   *
+   * The way past it is not a trick: `NOT APPLICABLE` or `DEFERRED`, with the
+   * reason in the answer file. Both are honest and both stay available, which
+   * is why this can be a refusal rather than a warning.
+   */
+  const settledHere = entries.filter(
+    (entry) => entry.status === "ANSWERED" && nonEmpty(entry.consequences_recorded_at),
+  );
+  // Module 0 is the collaboration contract, and `init` confirms it from the
+  // owners file: that *is* its coverage, recorded before any question could be
+  // asked. Reported as missing coverage it would fire on every project ever
+  // created, which is how a check teaches people to ignore it.
+  if (moduleId !== 0 && !settledHere.length) {
+    blockers.push(
+      `nothing is recorded against it: no question on this module has been asked and applied, so there is no coverage to confirm. ` +
+      `If it genuinely does not apply, record NOT_APPLICABLE with the reason; if it is being left for later, record DEFERRED.`
+    );
+  }
+
+  const open = entries.filter(
+    (entry) =>
+      entry.status === "PLANNED" ||
+      entry.status === "ASKED" ||
+      (entry.status === "ANSWERED" && !nonEmpty(entry.consequences_recorded_at)),
+  );
+  for (const entry of open) {
+    blockers.push(
+      `${entry.id} is ${entry.status}${entry.status === "ANSWERED" ? " and not applied" : ""}: ` +
+      `${entry.status === "ANSWERED" ? "settle it with qa-settle" : entry.status === "ASKED" ? "record the answer with qa-answer, or close it with qa-close" : "ask it, or close it with qa-close"}.`
+    );
+  }
+
+  const named = new Set<string>();
+  for (const entry of entries) {
+    if (!nonEmpty(entry.consequences_recorded_at)) continue;
+    for (const consequence of entry.consequences ?? []) named.add(consequence);
+  }
+  for (const decision of state.decisions ?? []) {
+    if (!named.has(decision.id)) continue;
+    const status = String(decision.status).toUpperCase();
+    if (status === "PROPOSED") {
+      blockers.push(
+        `decision ${decision.id} came out of this module's interview and is still PROPOSED: ` +
+        `approve it with a recorded provenance, reject it, or supersede it.`
+      );
+      continue;
+    }
+    if (status === "APPROVED" && !(decision as any).provenance && !findDecisionProvenance(state, decision.id)) {
+      blockers.push(
+        `decision ${decision.id} is APPROVED and records no provenance, so the module would rest on an approval nobody can trace.`
+      );
+    }
+  }
+  return blockers;
+}
+
+// ---------------------------------------------------------------------------
+// The typed ledger and the prose about it
+// ---------------------------------------------------------------------------
+
+/** Identifiers a governed document can cite, and the ledger they must be in. */
+const CITED_IDENTIFIER = /\b(DEC|REQ|TSK|RSK|DEP|EVD|AGT|BLK|CHK)-[A-Z0-9][A-Z0-9_-]*/g;
+
+/**
+ * Where a document says one thing and the ledger says another.
+ *
+ * The pilot's folder read as though decisions had been taken and risks
+ * registered, and `decisions: 0`, `risks: 0` were the actual numbers. Prose is
+ * where a project's reasoning lives and there is nothing wrong with that; what
+ * is wrong is prose that *claims a record*. A document naming `DEC-0007` is
+ * telling a reader to go and find `DEC-0007`.
+ *
+ * Deterministic on purpose: an identifier matching the ledger's own id pattern,
+ * cited in a governed document, that no record answers to. No natural-language
+ * inference, no keyword lists, nothing that would fire on ordinary writing.
+ */
+function ledgerCoherenceFindings(root: string, state: State): string[] {
+  const findings: string[] = [];
+  const known = knownRecordIds(state);
+
+  const documents = new Set<string>();
+  for (const artifact of state.artifacts ?? []) {
+    for (const value of [artifact.working_path, artifact.base_path]) {
+      if (nonEmpty(value)) documents.add(canonicalRelative(String(value)));
+    }
+  }
+  for (const relative of [...documents].sort()) {
+    const absolute = existingFileInside(root, relative);
+    if (!absolute) continue;
+    const text = fs.readFileSync(absolute, "utf8");
+    const cited = new Set<string>();
+    for (const match of text.matchAll(CITED_IDENTIFIER)) {
+      // The document's own artifact id is not a claim about another ledger.
+      if (match[0].startsWith("ART-")) continue;
+      cited.add(match[0]);
+    }
+    const missing = [...cited].filter((id) => !known.has(id)).sort();
+    if (missing.length) {
+      findings.push(
+        `${relative} cites ${missing.join(", ")}, which ${missing.length === 1 ? "is not a record" : "are not records"} in this project. ` +
+        `A document that names an identifier is telling a reader to go and find it; record ${missing.length === 1 ? "it" : "them"}, or write the sentence without the identifier.`
+      );
+    }
+  }
+
+  for (const module of state.modules ?? []) {
+    if (String(module.status).toUpperCase() !== "CONFIRMED") continue;
+    const blockers = moduleConfirmationBlockers(state, module.id);
+    for (const blocker of blockers) {
+      findings.push(`module ${module.id} is CONFIRMED, and ${blocker}`);
+    }
+  }
+
+  findings.push(...unprovenancedApprovals(state));
+  return findings;
+}
+
 /** A state that predates the ledger gets the empty one, in memory, on read. */
 function interviewLog(state: any): InterviewEntry[] {
   return Array.isArray(state.interview_log) ? state.interview_log : [];
@@ -6916,6 +7309,34 @@ function qaAsk(flags: Flags): void {
   const id = normalizeQuestionId(required(flags, "id"));
   const clash = findInterviewEntry(state, id);
   if (clash) throw new PlangonautError(duplicateQuestionRefusal(clash));
+
+  /*
+   * `ASKED` means the question was put to somebody. It is not a synonym for
+   * "written down".
+   *
+   * An agent can record a dozen questions as ASKED and show none of them, and
+   * the folder then says a dozen questions are waiting on a user who never saw
+   * one. The engine cannot watch the conversation, but it knows how many
+   * questions a turn is allowed to contain — the interaction mode says so — and
+   * a question can only have been shown in a turn.
+   *
+   * So the number of questions that are ASKED and unanswered at once cannot
+   * exceed that limit. Beyond it, record the question as `--planned`, which is
+   * exactly what planned means: intended, not yet put.
+   */
+  if (flags.planned !== true) {
+    const perTurn = ({ Guided: 1, Standard: 2, Expert: 3 } as Record<string, number>)[state.interaction_mode] ?? 2;
+    const waiting = interviewLog(state).filter((entry) => entry.status === "ASKED");
+    if (waiting.length >= perTurn) {
+      throw new PlangonautError(
+        `${waiting.length} question${waiting.length === 1 ? " is" : "s are"} already ASKED and unanswered ` +
+        `(${waiting.map((entry) => entry.id).join(", ")}), and ${state.interaction_mode} puts at most ${perTurn} to the user in a turn.\n` +
+        `ASKED means the question was shown to somebody; it is not a synonym for "written down". If you have not put this one yet, record it as intended:\n` +
+        `  plangonaut qa-ask --project-root . --id ${id} --question "..." --rationale "..." --owner <owner> --planned --operation-id <id>\n` +
+        `Otherwise record what came back for the open one${waiting.length === 1 ? "" : "s"} first, or close ${waiting.length === 1 ? "it" : "them"} with qa-close. Nothing was written.`
+      );
+    }
+  }
   const entry = newInterviewEntry(state, entryInputFromFlags(state, flags, id, flags.planned === true), at);
   /*
    * "Reconstructed from durable evidence" was an unverified self-declaration:
@@ -7594,7 +8015,7 @@ function applyModuleOutcome(
   state: State,
   input: { moduleId: number; status: string; answerFile: string; owner: string; summary?: unknown },
   at: string,
-): { module: Module; outcome: string; nextActionNote: string | null } {
+): { module: Module; outcome: string; nextActionNote: string | null; confirmationBlockers: string[] } {
   const outcome = input.status.toUpperCase().replaceAll("_", " ");
   if (!MODULE_STATUSES.has(outcome)) throw new PlangonautError(`Unsupported module status: ${outcome}`);
   const sourcePath = path.resolve(input.answerFile);
@@ -7607,6 +8028,21 @@ function applyModuleOutcome(
   if (!bytes.length || !bytes.toString("utf8").trim()) throw new PlangonautError(`Answer evidence cannot be empty: ${sourcePath}`);
   const module = state.modules.find((item) => item.id === input.moduleId);
   if (!module) throw new PlangonautError(`Unknown module: ${input.moduleId}`);
+
+  /*
+   * The same layering as an approval's provenance, and for the same measured
+   * reason. See the note in `ledgerMutation`.
+   *
+   * Refusing the write broke 22 call sites that use `CONFIRMED` to set a module
+   * terminal while testing something else, and compatibility with what exists
+   * was a requirement. So the write says what it sees; `validate` reports it;
+   * `handoff-check` blocks on it, which is the moment that matters -- a folder
+   * does not get handed over with a module confirmed over its own open
+   * questions.
+   *
+   * The brief allowed either: "a check or a warning, where possible."
+   */
+  const confirmationBlockers = outcome === "CONFIRMED" ? moduleConfirmationBlockers(state, input.moduleId) : [];
   Object.assign(module, {
     status: outcome,
     owner: input.owner,
@@ -7620,7 +8056,7 @@ function applyModuleOutcome(
     state,
     active ? `Discuss module ${active.id} — ${active.title}.` : "Review coverage, then proceed to G2.",
   );
-  return { module, outcome, nextActionNote };
+  return { module, outcome, nextActionNote, confirmationBlockers };
 }
 
 function record(flags: Flags): void {
@@ -7639,7 +8075,7 @@ function record(flags: Flags): void {
   // and the suggestion reported instead, because that field is what a fresh
   // recipient is told to obey and the recipient reads the folder, not this
   // terminal.
-  const { module, outcome, nextActionNote } = applyModuleOutcome(
+  const { module, outcome, nextActionNote, confirmationBlockers } = applyModuleOutcome(
     root,
     state,
     { moduleId, status: required(flags, "status"), answerFile: required(flags, "answer-file"), owner: String(flags.owner), summary: flags.summary },
@@ -7653,6 +8089,14 @@ function record(flags: Flags): void {
   const event = { event_id: eventId, type: "MODULE_RECORDED", state_revision: revision, at: timestamp, idempotency_key: key, module: moduleId, status: outcome, owner: flags.owner, evidence: module.evidence, evidence_sha256: module.evidence_sha256 };
   commitState(root, location, state, event);
   console.log(`Recorded module ${moduleId} as ${outcome}`);
+  if (confirmationBlockers.length) {
+    console.log(
+      `\nWARNING: module ${moduleId} is now CONFIRMED, and ${confirmationBlockers.length} thing${confirmationBlockers.length === 1 ? "" : "s"} in its own ledger say${confirmationBlockers.length === 1 ? "s" : ""} otherwise:\n` +
+      confirmationBlockers.map((line) => `- ${line}`).join("\n") +
+      `\nCONFIRMED means the project may build on this module. plangonaut handoff-check refuses to hand the folder over like this; ` +
+      `if a concern here does not apply, NOT_APPLICABLE or DEFERRED say so honestly.`
+    );
+  }
   if (nextActionNote) console.log(`\n${nextActionNotice(root, nextActionNote)}`);
 }
 
@@ -7862,11 +8306,71 @@ function ledgerMutation(kind: string, flags: Flags): void {
   }
   const timestamp = now();
   let record: any;
+  let unprovenanced = false;
   if (kind === "decision" || kind === "requirement" || kind === "task") {
     const status = required(flags, "status").toUpperCase();
     if (!rule.statuses!.has(status)) throw new PlangonautError(`Unsupported ${kind} status: ${status}`);
     record = { id, title: required(flags, "title").trim(), status, owner };
     if (!record.title) throw new PlangonautError(`--title cannot be empty`);
+
+    // An approval has to be able to name who approved it. See
+    // `findDecisionProvenance` for why reading a folder is not consent.
+    if (kind === "decision" && status === "APPROVED") {
+      /*
+       * Where this rule is enforced, and why it is not here.
+       *
+       * The rule itself is not in doubt: an approval that cannot name who
+       * approved it is an agent's inference wearing a decision's clothes. What
+       * was in doubt is the layer, and measuring settled it. Refusing the write
+       * broke 87 call sites across 13 test files, and not one of them is about
+       * decisions -- they use `APPROVED` as a convenient status for a fixture.
+       * A refusal there is not a guarantee, it is a migration nobody asked for,
+       * and compatibility with what exists was a requirement.
+       *
+       * So the write records what it can see and says what it cannot:
+       *
+       *   here              provenance is recorded when it exists; a warning
+       *                     names the three roads when it does not.
+       *   validate          reports every unprovenanced approval; --strict fails.
+       *   handoff-check     blocking. A folder does not get handed over resting
+       *                     on approvals nobody can trace.
+       *   the skill         carries the duty: if the user has not answered, the
+       *                     status is PROPOSED.
+       *
+       * Three roads, and the third exists because Adoption and Reconstruction
+       * are real: a project can arrive with decisions already taken, and a rule
+       * that could only be satisfied by a Plangonaut interview would make those
+       * modes unusable. A recorded statement is the same shape as an override --
+       * a person's words, inside the folder, hashed - and carries the same
+       * honest limit: the engine cannot tell who typed a file, only that the
+       * record points at something a reader can go and read.
+       */
+      const citedOverride = nonEmpty(flags["provenance-override"]) ? String(flags["provenance-override"]).trim() : null;
+      const citedNote = nonEmpty(flags["provenance-note"]) ? String(flags["provenance-note"]).trim() : null;
+
+      let provenance: DecisionProvenance | null = null;
+      if (citedOverride) {
+        provenance = overrideProvenance(state, citedOverride);
+        if (!provenance) {
+          throw new PlangonautError(
+            `--provenance-override names ${citedOverride}, which is not a recorded override in this project. Nothing was written.`
+          );
+        }
+      } else if (citedNote) {
+        const note = recordedSourceFile(root, "A provenance note", path.resolve(citedNote), {
+          suffix: "\nNothing was written.",
+        });
+        provenance = { kind: "statement", ref: note.relative, authority: owner, at: timestamp, sha256: note.hash };
+      } else {
+        provenance = findDecisionProvenance(state, id);
+      }
+
+      if (provenance) {
+        record.provenance = provenance;
+      } else {
+        unprovenanced = true;
+      }
+    }
   } else if (kind === "dependency") {
     const type = required(flags, "type").toUpperCase();
     if (!rule.statuses!.has(type)) throw new PlangonautError(`Unsupported dependency type: ${type}`);
@@ -7921,6 +8425,16 @@ function ledgerMutation(kind: string, flags: Flags): void {
   if (typeof record.status === "string") event.record_status = record.status;
   commitState(root, location, state, event);
   console.log(`${existing ? "Updated" : "Created"} ${kind} ${id} at revision ${record.revision}`);
+  if (unprovenanced) {
+    console.log(
+      `\nWARNING: ${id} is APPROVED and nothing records who approved it.` +
+      `\nAn approval that cannot name its author is an inference wearing a decision's clothes. Three roads, and no fourth:` +
+      `\n  the interview   settle the question it came from with --consequences ${id}` +
+      `\n  an override     --provenance-override <OVR-ID>` +
+      `\n  a statement     --provenance-note <a file inside the project, in the decider's own words>` +
+      `\nplangonaut validate reports this; --strict fails on it; handoff-check refuses to hand the folder over with it.`
+    );
+  }
 }
 
 /**
@@ -11013,9 +11527,22 @@ export async function main(argv: string[]): Promise<number> {
       // decided the project may not carry one: a release check, a handoff, a
       // pipeline.
       const unclaimed = unclaimedDocumentReport(root, state);
-      if (unclaimed.findings.length && flags.strict === true) {
+      /*
+       * Where the prose and the typed ledger disagree. Reported always, never
+       * refused at the write: see `ledgerCoherenceFindings` for why the
+       * direction is that way round. Under `--strict` it fails, and it has to:
+       * the warning an approval prints says "--strict fails on it", and the
+       * synthetic pilot caught the engine not keeping that promise. A promise
+       * the tool does not keep is the same defect this cycle is about, made by
+       * the engine instead of by an agent.
+       */
+      const coherence = ledgerCoherenceFindings(root, state);
+      if (flags.strict === true && (unclaimed.findings.length || coherence.length)) {
+        const parts: string[] = [];
+        if (unclaimed.findings.length) parts.push(`- ${unclaimed.findings.join("\n- ")}\n\n${unclaimed.remedy.join("\n")}`);
+        if (coherence.length) parts.push(`- ${coherence.join("\n- ")}`);
         throw new PlangonautError(
-          `Validation failed (--strict):\n- ${unclaimed.findings.join("\n- ")}\n\n${unclaimed.remedy.join("\n")}`,
+          `Validation failed (--strict):\n${parts.join("\n\n")}`,
           "PROJECT_STATE_UNTRUSTED"
         );
       }
@@ -11026,6 +11553,12 @@ export async function main(argv: string[]): Promise<number> {
         console.log(`\n${unclaimed.remedy.join("\n")}`);
         console.log(`\nThe state above is valid; these files are not part of it. --strict makes this an error.`);
       }
+      if (coherence.length) {
+        console.log(`\nWARNING: ${coherence.length} statement${coherence.length === 1 ? "" : "s"} in this project ${coherence.length === 1 ? "does" : "do"} not match the ledger.`);
+        for (const line of coherence) console.log(`- ${line}`);
+        console.log(`\nMechanical integrity is what "valid" means above; this is about whether the records say the same thing as the documents. --strict makes this an error.`);
+      }
+
       // Reported, never acted on. See `legacyBackupDirectories`.
       const legacy = legacyBackupDirectories(root);
       if (legacy.length) {

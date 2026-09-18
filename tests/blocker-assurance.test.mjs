@@ -174,7 +174,7 @@ test("the human outputs do not offer zero as proof either", (t) => {
     "--known-work", "Le domande del modulo 1", "--conditional-work", "Dipende dalle risposte",
     "--questions", "10-30", "--operations", "20-60", "--cycles", "2-5",
     "--confidence", "BASSA", "--confidence-reason", "Una sola domanda risposta",
-    "--cycle-state", "REGOLARE",
+    "--cycle-state", "REGOLARE", "--author", "agent",
   ]);
   const forecast = ok(root, ["forecast", "--project-root", root]);
   // Same reason as above: still not a verified zero, no longer because nothing

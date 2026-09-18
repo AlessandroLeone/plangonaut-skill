@@ -719,9 +719,13 @@ test("next names an unopened prerequisite of the module it is proposing", async 
   // leaving module 10 — which module 9 rests on — untouched.
   const answer = path.join(root, "a.txt");
   fs.writeFileSync(answer, "risposta\n");
+  // DEFERRED rather than CONFIRMED: nothing was asked about these modules, and
+  // confirming a module nobody examined is exactly what this release refuses.
+  // Deferring one is honest and makes it terminal all the same.
   for (const id of [1, 2, 3, 4, 5, 6, 7, 8]) {
-    await run("record", "--project-root", root, "--module", String(id), "--status", "CONFIRMED",
+    const result = await run("record", "--project-root", root, "--module", String(id), "--status", "DEFERRED",
       "--answer-file", answer, "--owner", "Ada", "--operation-id", op("record"));
+    assert.equal(result.error, null, result.message);
   }
   const result = await run("next", "--project-root", root);
   assert.match(result.out, /Module 9/);
