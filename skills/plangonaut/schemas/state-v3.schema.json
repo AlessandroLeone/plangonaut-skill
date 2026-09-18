@@ -1020,6 +1020,44 @@
           "pattern": "^[0-9a-f]{64}$"
         }
       }
+    },
+    "document_governance": {
+      "type": "object",
+      "$comment": "What this project expects to govern, and what it deliberately does not. Not required: a project written by an earlier engine does not carry it, and its absence means `nothing was recorded about this folder`, which is narrower than an empty list and is read as such. Written by `init`; `exclusions` is changed only by `plangonaut govern`, never by hand, because this object is replayed and digested like the rest of the state.",
+      "required": [
+        "directories",
+        "exclusions",
+        "preexisting"
+      ],
+      "properties": {
+        "directories": {
+          "type": "array",
+          "$comment": "Project-relative directories whose Markdown is expected to be governed.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "exclusions": {
+          "type": "array",
+          "$comment": "Files declared deliberately outside the ledger, each with a reason in the event that recorded it.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "preexisting": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "$comment": "Markdown present when the project was initialised, so that adopting a repository with existing documentation does not report it as an agent's mistake. `null` means nobody recorded it, which is why only the high-precision `-vN` signal applies to such a project.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
     }
   },
   "$defs": {

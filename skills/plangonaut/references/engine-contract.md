@@ -14,7 +14,11 @@ Use `plangonaut help` or `node lib/bin/plangonaut.js help` from a built checkout
 
 | Commands | Purpose |
 |---|---|
-| capabilities, status, next, resume, validate | Inspect state, active module and supported integrity checks |
+| capabilities, status, next, resume | Inspect state, propose the next work with the reason it comes first, and report where the interview has been digging |
+| validate | Check that state, history and documents agree, and report Markdown the project looks like it should be governing; `--strict` makes that report a failure |
+| handoff-check | Ask whether the folder is *enough* for somebody who was not in the conversation, which is a different question from whether it is intact |
+| govern | Record that a file is deliberately outside the ledger, with the reason, or bring it back under it |
+| migrate-backups | Move a `backups/` directory written by an earlier engine under `.plangonaut/backups/documents/`, verified and with a receipt |
 | qa-ask, qa-answer, qa-settle | Open a question, record the answer verbatim, record what the answer changed |
 | qa-close, qa-supersede, qa-log | Defer, skip or invalidate a question; replace one without erasing it; read or regenerate the history |
 | init, record, override, reconcile, gate | Persist approved module outcomes, corrections and gate records |
@@ -161,11 +165,50 @@ Read that as an open item, not as a pass: those gates rest on evidence nothing h
 
 The two refusals, verbatim, so they are recognisable before they are met:
 
-> `<record> records evidence at <path>, which is missing or escapes the project root. Restore the file, or point the record at the file that stands in its place: <remedy>`
+> `<record> records evidence at <path>, which is missing. Restore the file, or point the record at the file that stands in its place: <remedy>`
+
+> `<record> records evidence at <path>, which is outside the folder that travels with the project, so the record cannot be read by whoever receives it. Copy the file into the project first, then re-record against its path relative to the root: <remedy>`
+
+The two used to be one sentence and one remedy, and the remedy was wrong for the
+second of them: it offered `--source-file <path>` with the very path that had just
+been refused, so an agent that pasted it re-recorded the same defect, `validate`
+failed again, and `source_history` gained an entry documenting a repair that
+repaired nothing. A path that was never portable cannot be repaired by pointing at
+it again, so the remedy now carries the placeholder `<path-inside-the-project>` and
+says to bring the file in first. A portable path whose file is merely missing keeps
+its path, because there restoring it is exactly the fix.
 
 > `<record> recorded <path> with a digest that no longer matches the file. Re-record it against the current file, or restore the recorded content. To re-record: <remedy>`
 
-The remedy named for a module is `plangonaut record --answer-file` — a module answer is recorded again, not re-recorded. For an override and for a gate it is `re-record`.
+The remedy named for a module is `record`, with the module answer supplied again through `--answer-file` — a module answer is recorded again, not re-recorded. For an override and for a gate it is `re-record`.
+
+## One rule for every file that enters a permanent record
+
+A record that names a file is only worth as much as the recipient's ability to open
+it. Every option that puts a path into permanent state therefore passes the same
+check, in one place in the engine:
+
+- `override --instruction-file`
+- `reconcile --evidence-file`
+- `gate --evidence-file`
+- `evidence --file`
+- `blocker-record --evidence-file`, `blocker-resolve --evidence-file`
+- `re-record --source-file`
+
+What is refused: an absolute path, and one climbing out of the root with `..` — which
+covers a drive-qualified path and a UNC path, both being absolute; anything inside the
+reserved state directories; a symbolic link that resolves outside the root, because
+containment is decided on real paths and not on written ones; a file that does not
+exist, is not a file, or is empty. Windows and POSIX spellings resolve identically:
+the canonical separator is `/`, and `..\..\x` is one climb rather than one segment.
+
+This was three copies of the check and one hole. `override` had no check at all, so it
+accepted what `reconcile` refuses, and a pilot recorded an override against a file in a
+temporary directory: accepted on the day, refused by `validate` days later, by which
+time the file — and with it the override's own text — could have been gone. An override
+records a change of direction. It is among the last things that may evaporate.
+
+Every refusal ends with what was written, which in all these cases is nothing.
 
 ## Re-recording a governed source
 
@@ -176,6 +219,179 @@ It changes provenance and only provenance. It cannot pass, reopen or re-authoris
 What it preserves: the previous path and digest, the owner, the reason and the event id are appended to `source_history` on the record and written to a `RECORDED_SOURCE_UPDATED` event carrying the same values and the new state revision. When there was nothing to supersede — a gate that never recorded a digest — the history entry stores `null` for path and digest, because "nothing was claimed" and "the previous digest matched" must never look alike.
 
 It refuses a `--kind` other than `override` or `gate`, an unknown record, an empty `--reason`, an owner who is not a confirmed decision owner, a source outside the project, and a re-record that would change nothing (`<record> already records <path> at that digest. There is nothing to re-record; no changes written.`). A refused re-record writes no event and leaves no history entry. Idempotency is the same as every other mutation: an identical retry under the same `--operation-id` prints `Idempotent retry: re-record already applied.`, and the same id with different input is refused.
+
+## Governed documents, and the ones only found
+
+`state.document_governance` records what a project expects to govern: the directories,
+the files deliberately excluded, and the Markdown that was already in the folder when
+`init` ran. That last list is why it is written at `init` and cannot be computed later
+— afterwards, a document that predates Plangonaut and one an agent wrote by hand are
+both simply there.
+
+`validate` reports Markdown that looks governed and is not, in two tiers. A
+`*-v<N>.md` file that no artifact claims is reported always: the skill asks for exactly
+that naming convention, so a file carrying it with no artifact behind it is almost
+always an agent that followed the convention and skipped the command. Any other
+Markdown inside a governed directory is reported only when it appeared after `init`,
+and only on a project that recorded `preexisting`. Conventional repository files
+(`README`, `CHANGELOG`, `LICENSE`, `CONTRIBUTING`, agent instruction files), dependency
+and build directories, and the derived interview view are never reported.
+
+It is a warning, and `--strict` turns it into a failure with exit 2. That order round
+is deliberate: an anomaly that speaks only behind a flag is invisible to the person who
+does not know the flag exists, which is everyone meeting it for the first time.
+
+`plangonaut govern --exclude <path> --reason TEXT --owner NAME --operation-id ID`
+records a deliberate exception, and `--include` withdraws it. It is a command rather
+than a field to edit because `document_governance` is replayed and digested like the
+rest of the state: hand-editing it would put the state out of step with its own
+history and make `validate` refuse the project — punishing somebody for doing what the
+warning asked.
+
+**Adoption.** `doc-save` still refuses to overwrite a working file the ledger does not
+know about, with one exception that is not an overwrite: when the bytes already on disk
+are exactly what the save would write, the file is adopted into the ledger instead,
+and the result says `adopted_existing_file: true`. Without it the warning would have
+had no runnable remedy — an agent that wrote `docs/x-v1.md` by hand and passed that
+same file as `--content-file`, which is the only sensible thing to pass, was refused
+for overwriting a file with its own content.
+
+## Modules, coverage and what `next` reads
+
+`qa-ask`, `qa-answer` and `qa-settle` move a module from `NOT STARTED` to
+`IN DISCUSSION` when work is recorded against it, and record it in the event as
+`module_started`. That is the only automatic transition there is, and it only ever goes
+forward: `CONFIRMED`, `NOT APPLICABLE`, `DEFERRED` and `BLOCKED` are judgements, none of
+them is ever written by an automatism, and none of them is overwritten by activity
+arriving afterwards. `owner` and `evidence` stay as they were — an interview interaction
+is neither a sign-off nor an evidence file.
+
+`IN DISCUSSION` is the schema's word for it. The vocabulary is fixed
+(`NOT STARTED`, `IN DISCUSSION`, `CONFIRMED`, `PARTIAL`, `DEFERRED`, `NOT APPLICABLE`,
+`BLOCKED`) and a value outside it is refused by the same validation that would have
+written it.
+
+`next` reads the interview ledger before the questionnaire, in this order: an answer
+recorded and not applied, then a question asked and waiting, then a question already
+`PLANNED`, and only then the catalogue. Each is printed with why it comes before the
+rest. A catalogue question the history already answers — answered, settled or closed —
+is marked rather than reprinted clean; matching is on exact text, which is crude and is
+the only comparison that cannot claim more than it knows.
+
+`status.module_progress` and `next` report the shape of the work rather than one
+fraction: modules confirmed, in progress, never opened, not applicable; questions
+planned, asked, answered-not-applied, settled, closed; and the ledger counts. `coverage`
+keeps its old meaning and is no longer the only thing a reader has.
+
+**Coverage imbalance.** When at least 6 interactions are concentrated in at most 3
+modules while at least 10 modules have never been opened, `status` and `next` say so,
+with the threshold that triggered it. It reports; it never refuses. A deliberate deep
+dive is often right — what is not acceptable is that nobody stated it.
+
+**Prerequisites.** `MODULE_PREREQUISITES` records which modules must be underway before
+another module's answers can be trusted — identity and users before scope, project type
+and technology before architecture, data and delivery. `next` names an unopened
+prerequisite of the module it is proposing. It explains an ordering; it does not enforce
+one.
+
+## Which engine is running, and which one wrote this project
+
+`status` reports four separate facts under `versions`, and `resume` and the context
+pack print the same four:
+
+    running     the CLI executing now
+    created     what wrote the project's first state, or last migrated it
+    last_wrote  what most recently committed to it
+    schema      the shape of the state
+
+`beave_version` is set by `init`, `migrate` and `baseline` and by nothing else, so it
+answers *what created this* and was read for two releases as *what version this project
+is on*. Those are different facts. `last_engine_version` is the second one, written
+inside `commitState` — the single place every mutation passes through — so it rides the
+state patch that each event already verifies against itself, and replay reproduces it
+without any event format changing. It is optional: a project written before it existed
+does not carry it and is not invalid, and the absence is reported as an absence.
+
+`compatibility` is `SAME`, `CLI_NEWER`, `PROJECT_NEWER` or `UNKNOWN`. A difference in
+version with the same schema changes nothing and migrates nothing; what it means is that
+an observation about that project belongs to the engine that wrote it. `UNKNOWN` is
+returned rather than a guessed ordering whenever either version cannot be parsed — a
+wrong direction here would tell somebody to migrate a project that does not need it.
+
+A different `schema` is the one case that blocks: the project is refused until
+`plangonaut migrate` has run, and the refusal now names the command and states that
+nothing was changed.
+
+**None of this touches the network.** The running version comes from the package's own
+`VERSION` and everything else from the project on disk. There is no registry lookup and
+no "a newer one is available": that question has nothing to do with whether this project
+can be opened.
+
+## Handoff: integrity is not sufficiency
+
+`project-verify` proves a package arrived whole. It has never had anything to say about
+whether it is enough, and cannot: a governed document resting its entire technical
+foundation on files under an absolute path passes it without a remark, because that path
+is not a file of the package and so is not in the manifest.
+
+`handoff-check --project-root . [--json]` asks the other question. It reports **blocking**
+findings — things that would stop somebody who was not in the conversation — separately
+from advisory ones, and refuses (exit 2) on the first kind.
+
+It reads path references out of the **ledger's own path fields** and out of governed
+documents, and classifies them by how they are marked.
+
+Where each kind of path is looked for is deliberately not the same. `C:\...`, a UNC
+share and a `..` climb are unmistakable -- nothing in ordinary English looks like one --
+so they are recognised anywhere they appear. A POSIX absolute path is not: English is
+full of things a permissive pattern reads as one, from a route in a sentence to a
+fraction to an option written `--in/--out`, and a check that flags those is a check
+somebody turns off, which costs more than the paths it would have caught. So
+`/opt/project/lib` is recognised only where something has already declared that what
+follows is a location: a Markdown link or image target, a Markdown reference
+definition, a line that qualifies its own reference, and a field of the ledger that
+holds a path. Everywhere else it is prose, and prose is left alone. A line carrying `(external dependency)`, `(historical reference)`,
+`(example)` or `(informative)` is a declaration and travels as one. An unqualified path
+out of the folder is treated as a dependency and blocks, because that is the reading
+that costs something if it is wrong the other way. A temporary location blocks whatever
+it is marked with: it will not exist on the recipient's machine and may not exist here
+tomorrow.
+
+It also blocks on a module left `NOT STARTED` (unexamined is not the same as not
+applicable), on an empty requirements, decisions or tasks ledger, on an answer recorded
+and never applied, on an unreconciled override, and on an artifact declared `SUPERSEDED`
+that names nothing that replaced it.
+
+`validate` says nothing about any of this, on purpose. A project in the middle of an
+interview is entitled to be sound and nowhere near deliverable, and merging the two
+questions would weaken both.
+
+## Backups, and notices that are right to give and wrong to repeat
+
+Backups of project files go under `.plangonaut/backups/documents/`, keeping their
+project-relative path in the name so two files with the same basename cannot collide.
+The ledger's own files keep backing up to `.plangonaut/backups/` as before. Earlier
+engines wrote `backups/` next to the file, which on a clean project meant a `backups/`
+directory in the root and, for anyone running `git status`, the first thing they saw.
+
+Existing ones are **found and left alone**: `validate` reports them, and only
+`plangonaut migrate-backups --project-root . --apply` moves them — copying and verifying
+each by digest before removing the original, and writing a receipt that records where
+each came from. Without `--apply` it reports what it would do and writes nothing. They
+are backups, and one of them may hold the only copy of a revision.
+
+`init` adds exactly two lines to `.gitignore`: `.plangonaut/backups/` and
+`.plangonaut/lock.json`. Nothing else. The state, the events, the interview history and
+the evidence are the record the folder exists to carry, and ignoring any of them would
+defeat the product.
+
+A standing condition — one that has not changed since it was last reported — is stated
+in full the first time and abbreviated afterwards, with the count. What shrinks is the
+unchanging explanation; anything that varies, such as the action the engine would have
+suggested, is repeated every time. The counts live in `.plangonaut/notices.json`, which
+is machine-local bookkeeping about what has already been printed rather than project
+state: it is excluded from `stateDigest` for the same reason `lock.json` is, it is not
+replayed, and it does not travel in a package. `status.standing_notices` reports it.
 
 ## Recorded progress forecast
 
@@ -194,7 +410,7 @@ a recovery goes wrong.
 
 | | What it is | Who writes it | What happens if it is lost |
 |---|---|---|---|
-| `state.json` | The **canonical current state**. Every command loads it; `validate` checks it. | Only `commitState`, inside a transaction. | Rebuilt from the events by `plangonaut replay --repair`, back to the last replay origin. |
+| `state.json` | The **canonical current state**. Every command loads it; `validate` checks it. | Only `commitState`, inside a transaction. | Rebuilt from the events by `plangonaut replay --project-root . --repair --operation-id <id>`, back to the last replay origin. |
 | `events.jsonl` | The **append-only history**. Each event carries the mutation it performed, the digest of the state before and after it, and the digest of the event before it. | Only `commitState`, inside the same transaction. | Not rebuildable. It is the thing everything else is checked against. |
 | `transactions/` | The **journal** of an operation in flight. Deleted the moment the operation finishes. | Every mutating command. | An operation interrupted with no journal cannot be resolved automatically; the engine says so and stops rather than guessing. |
 | `backups/` | Copies of what a file said before it was replaced. | `atomicWrite`, and `replay --repair` / `baseline` explicitly. | Nothing current depends on them; they exist so a repair never means a loss. |
@@ -235,7 +451,7 @@ Everything before the origin stays in the file, unchanged and unreinterpreted,
 and `replay`, `validate` and `resume` all say how many events that is. Nothing is
 reconstructed for them.
 
-**Repair.** `plangonaut replay --repair --operation-id <id>` copies `state.json` and
+**Repair.** `plangonaut replay --project-root . --repair --operation-id <id>` copies `state.json` and
 `events.jsonl` into `.plangonaut/backups/` first, puts the rebuilt state back, records
 the repair as an event, and regenerates the derived documents. It refuses to run
 when there is nothing to repair, and a retry with the same operation id applies
@@ -284,7 +500,7 @@ stops, names the directory, and changes nothing.
 Three cases, and none of them guesses.
 
 - **`.plangonaut/state.json` is missing and the history is intact.** Every command
-  says so and names `plangonaut replay --repair`, which rebuilds it. This is what the
+  says so and names `plangonaut replay --project-root . --repair --operation-id <id>`, which rebuilds it. This is what the
   replay is *for*, and it was the one case it could not handle until a review
   deleted the file and asked.
 - **The last line of `events.jsonl` was cut off mid-write.** `plangonaut recover`
