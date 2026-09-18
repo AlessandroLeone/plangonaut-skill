@@ -211,7 +211,10 @@ same, and a project can pass the first for months while failing the second.
 
 It refuses on things that would stop a recipient: a path to something outside the folder
 that no document qualifies, a module still `NOT STARTED`, an empty requirements,
-decisions or tasks ledger, an answer recorded and never applied, an override left open.
+decisions or tasks ledger, an answer recorded and never applied, an override left open,
+a decision marked `APPROVED` that cannot name who approved it, a module marked
+`CONFIRMED` over its own open questions, and a document sitting outside the ledger where
+nothing can notice it changing.
 It reports, without refusing, the things worth knowing: a deep dive that left most
 modules untouched, a document outside the ledger, a blocker ledger nobody ever confirmed
 was empty.
@@ -220,6 +223,41 @@ When a document genuinely has to point outside the folder, mark the line for wha
 `(external dependency)`, `(historical reference)`, `(example)` or `(informative)` — so the
 recipient learns that it is needed and absent, instead of finding a path that does not
 resolve on their machine.
+
+### Who decided it
+
+An `APPROVED` decision is the strongest thing in the folder: everything after it
+is entitled to assume somebody with the authority chose it. So Plangonaut wants
+to know who, and there are three ways to tell it.
+
+The usual one is free: answer the question the decision came from, and settle it
+naming the decision.
+
+```
+plangonaut qa-settle --project-root . --id QNA-0004 --interpretation "..." --reply "..." --consequences DEC-0007 --owner Ada --operation-id op-settle-4
+```
+
+If the decision was taken outside an interview -- and on an existing project most
+of them were -- point at where it was written down, in the decider's own words,
+in a file inside the folder:
+
+```
+plangonaut decision --project-root . --id DEC-0007 --title "..." --status APPROVED --owner Ada --provenance-note docs/design-review.md --operation-id op-dec-7
+```
+
+The third way is a recorded override, with `--provenance-override OVR-0002`.
+
+Nothing refuses the write. What happens instead is that Plangonaut says out loud
+that it cannot see who approved it, `validate` repeats it, `validate --strict`
+fails, and `handoff-check` will not let the folder go out like that. If the
+answer really has not come back yet, the honest status is `PROPOSED`, and it is
+always available.
+
+The same goes for a module: `CONFIRMED` means the project may build on it, and
+Plangonaut will tell you when the module's own records say otherwise -- an open
+question, a proposal nobody accepted, or nothing recorded against it at all. A
+module that does not apply is `NOT_APPLICABLE` with the reason; one for later is
+`DEFERRED`.
 
 ### Recording what is holding the project up
 

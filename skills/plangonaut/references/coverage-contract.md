@@ -55,6 +55,24 @@ In Hybrid, `plangonaut status` and `plangonaut next` report the imbalance and th
 
 At each checkpoint report the unresolved frontier, important new discoveries and the next question or investigation. Totals help navigation, but no percentage or module count establishes readiness. A user's request to pause ends the session with unfinished work preserved, not a false completion claim.
 
+## When a module may be confirmed
+
+`CONFIRMED` means the project may build on the module. It is a claim about the
+module's own ledger, and four things in that ledger contradict it:
+
+- a question on the module is `ASKED`, or `ANSWERED` with its consequences not yet applied;
+- a decision that came out of the module's interview is still `PROPOSED`;
+- an `APPROVED` decision of the module's records no provenance;
+- nothing at all is recorded against it -- no coverage exists to confirm.
+
+`record --status CONFIRMED` names any of these at the write; `validate --strict`
+fails on them and `handoff-check` refuses the handover. A module that genuinely
+does not apply is `NOT_APPLICABLE` with its reason; one being left for later is
+`DEFERRED`. Both are honest, and both are available at any moment.
+
+Module 0 is exempt from the last condition: `init` confirms it from the owners
+file, which is the whole of its content.
+
 ## Readiness assessment
 
 Record one of these human-readable outcomes with scope, evidence, authority and remaining restrictions. They are report labels, not new CLI gate values.

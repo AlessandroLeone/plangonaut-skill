@@ -327,6 +327,75 @@ nothing was changed.
 no "a newer one is available": that question has nothing to do with whether this project
 can be opened.
 
+## An approval names who approved it
+
+`APPROVED` is the strongest word the decision ledger has: it says a person with
+the authority chose this, and everything downstream is entitled to build on it.
+The first real pilot showed how little it took to get that word written without
+anybody having chosen anything -- an agent read a prototype, inferred what it
+implied, and recorded the inference as a decision. Nothing in the engine was
+wrong. Nothing in the engine could tell.
+
+So an `APPROVED` decision now carries `provenance`, and there are three roads to
+one and no fourth:
+
+| road | how | what it rests on |
+| --- | --- | --- |
+| the interview | settle the question it came from: `qa-settle --consequences DEC-XXXX` | the user's own recorded answer, its authority and its timestamp |
+| an override | `--provenance-override OVR-XXXX` | a recorded override, with its source file and digest |
+| a statement | `--provenance-note <a file inside the project>` | the decider's own words, in the folder, hashed |
+
+The third road exists because Adoption and Reconstruction are real: a project
+arrives with decisions already taken, and a rule satisfiable only by a Plangonaut
+interview would make those modes unusable. It carries the override's honest
+limit -- the engine cannot tell who typed a file, only that the record points at
+something a reader can go and read. A file outside the project is refused, like
+every other recorded source.
+
+**Where the rule is enforced, and why not at the write.** Refusing the write was
+implemented and then measured: it broke eighty-seven call sites that use
+`APPROVED` as a convenient fixture status, and compatibility with existing
+projects was a requirement. A refusal there is not a guarantee, it is a
+migration. So:
+
+- the write records provenance when it exists and **names what is missing** when it does not, listing the three roads;
+- `validate` reports every unprovenanced approval; **`--strict` fails** on it;
+- `handoff-check` treats it as **blocking** -- a folder is not handed over resting on an approval nobody can trace;
+- the skill carries the duty: if the user has not answered, the status is `PROPOSED`.
+
+A decision written by an older engine has no provenance and is not retrofitted
+with one. It is reported, which is the honest answer: nobody can now tell.
+
+**A module is confirmed against its own ledger.** `CONFIRMED` means the project
+may build on the module, and the same demotion applies for the same measured
+reason. `record --status CONFIRMED` names, and `validate` and `handoff-check`
+enforce, four conditions read from the module's own records: no question on it is
+`ASKED` or `ANSWERED`-but-unapplied; no decision that came out of its interview
+is still `PROPOSED`; no approval of its is unprovenanced; and something is
+actually recorded against it -- a module with an empty ledger has no coverage to
+confirm. Module 0 is exempt from the last one: `init` confirms it from the owners
+file, which is the whole of its content. `NOT_APPLICABLE` and `DEFERRED` remain
+available and say something true.
+
+**A question is `ASKED` when it was shown.** `qa-ask` refuses to open more
+concurrent unanswered questions than the interaction mode puts to a user in one
+turn -- one in Guided, two in Standard, three in Expert. `--planned` is always
+allowed, however many are waiting, because writing down a question you intend to
+ask is a different act from asking it. This is the one rule in this group that
+refuses at the write, and it can: `ASKED` has no legitimate batch use.
+
+**A forecast says whose numbers it is.** `forecast` requires `--author
+agent|human` and records it as `authored_by`. `recorded_by` is the owner under
+whose authority the command ran, which is a different fact and was being read as
+though it were this one. `resume` renders an agent's forecast as an estimate, not
+as a commitment anyone made. A forecast written before this distinction records
+neither, and absent means unknown rather than human.
+
+**Prose against the ledger.** `validate` also reports governed documents that
+cite record identifiers no project holds, and, under `--strict`, fails on them
+along with the findings above. The direction is deliberate: the documents are
+checked against the ledger, never the other way round.
+
 ## Handoff: integrity is not sufficiency
 
 `project-verify` proves a package arrived whole. It has never had anything to say about
@@ -395,7 +464,7 @@ replayed, and it does not travel in a package. `status.standing_notices` reports
 
 ## Recorded progress forecast
 
-The forecast the agent states in conversation ([interview-protocol.md](interview-protocol.md)) has a recorded counterpart so a fresh agent reads it instead of the chat. The contracted surface is `forecast --project-root . --owner NAME --phase TEXT --known-work TEXT --conditional-work TEXT --questions MIN-MAX --operations MIN-MAX --cycles MIN-MAX --confidence ALTA|MEDIA|BASSA --confidence-reason TEXT --cycle-state REGOLARE|IN_ESPANSIONE|RISCHIO_LOOP|BLOCCATO`, with `--change-reason` required once a previous forecast exists, and `forecast --project-root .` alone reading the current one instead of writing a new one. Check `plangonaut help` and `capabilities` for the installed surface before relying on it; the semantic protocol does not depend on it and never waits for it.
+The forecast the agent states in conversation ([interview-protocol.md](interview-protocol.md)) has a recorded counterpart so a fresh agent reads it instead of the chat. The contracted surface is `forecast --project-root . --owner NAME --phase TEXT --known-work TEXT --conditional-work TEXT --questions MIN-MAX --operations MIN-MAX --cycles MIN-MAX --confidence ALTA|MEDIA|BASSA --confidence-reason TEXT --cycle-state REGOLARE|IN_ESPANSIONE|RISCHIO_LOOP|BLOCCATO --author agent|human`, with `--change-reason` required once a previous forecast exists, and `forecast --project-root .` alone reading the current one instead of writing a new one. Check `plangonaut help` and `capabilities` for the installed surface before relying on it; the semantic protocol does not depend on it and never waits for it.
 
 What the engine owns: a typed current forecast and an ordered history of the previous ones, each carrying phase, known work, conditional work, the ranges for questions, operations and cycles, confidence and its reason, cycle state, the reason it changed, who recorded it, when, and at which state revision, under the event `PROGRESS_FORECAST_RECORDED`. A single number is stored as a range whose ends are equal and means the quantity is known, not that it was guessed precisely. **No percentage is stored anywhere.** Counts the ledgers already hold — open blockers, open overrides, tasks by status, gates remaining, unresolved modules — are derived by the engine, so the caller describes the work and does not retype what can be counted.
 

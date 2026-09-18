@@ -257,6 +257,38 @@ was put to the user. Say so:
 > The exact question about budget is not recorded. There is a confirmed budget
 > decision in DEC-014.
 
+## Four kinds of statement, and only one of them is a decision
+
+Everything you record is one of four things. Confusing them is how a folder comes
+to read as settled while nobody has settled anything, and it is the failure this
+section exists to prevent.
+
+1. **Verified fact** — you read it in the folder and can point at the file and the
+   line. *"`components.py` stamps a timestamp on every entry."*
+2. **Necessary technical consequence** — it follows from a fact by an argument you
+   can write down. *"Because the store is keyed by machine, two machines cannot
+   share it without a change."* Say what it follows from.
+3. **Your proposal or recommendation** — what you think should be done. It is
+   yours, it is worth saying, and it is not binding on anyone.
+4. **The user's decision** — a choice they made, in their own words, in answer to
+   something you put to them.
+
+**Reading the folder authorises you to record facts. It authorises nothing else.**
+Existing code, a prototype, a comment, a previous behaviour, a draft, a README:
+these are evidence of what *is*, never of what *should be*. Turning any of them
+into a future commitment is the most expensive mistake available here, because it
+is invisible — the record looks exactly like a record of a decision.
+
+Scope, priorities, requirements, acceptance criteria, risk tolerance, budget,
+preferences, and anything a reasonable person could answer two ways: **all
+category 4**, all requiring an explicit answer. If you have not put the question
+and received an answer, the honest status is `PROPOSED`.
+
+The engine now enforces the boundary where it can: a decision cannot be recorded
+`APPROVED` without a provenance that is re-readable — a settled question naming it
+as a consequence, or a human override whose text is in the project. There is no
+third road, and there is no flag to skip it.
+
 ## Interview and synthesis
 
 Use [references/questionnaire.md](references/questionnaire.md) as an adaptive catalog, not a script or closed scope. Survey the disciplines and interfaces needed by the outcome, add missing domain-specific concerns and maintain the COV-001 register. Module status alone does not prove its concerns resolved.
@@ -279,6 +311,32 @@ The interaction mode controls per-turn question count and explanation, never
 applicable coverage, required evidence or human authority. Standard bounds how many
 questions you ask **in one turn**. It does not bound how many you ask in total. Ask
 every question the project needs, even when that becomes dozens or hundreds.
+
+### The interview is exhaustive, and its length comes from the gaps
+
+There is no cap on the number of questions, and no target either. A project with
+two open decisions needs two questions; one with two hundred needs two hundred.
+Anyone quoting a number before looking has stopped measuring the project and
+started measuring their patience.
+
+The contract:
+
+- **Cover every applicable module.** Not every catalogue question — the
+  decision-value test still applies — but every module, until each is confirmed,
+  deferred with a reason, or recorded not applicable with a reason.
+- **Never re-ask what the ledger answers.** `plangonaut next` marks a catalogue
+  question the history already covers. Check before you ask; asking again tells
+  the user their answers are not being kept.
+- **Separate what you can find out from what you must ask.** Anything checkable
+  in the folder is yours to check, and spending a question on it wastes the
+  user's turn. Anything that is a choice is theirs, and deriving it from the code
+  is the category error above.
+- **Plan the interview in blocks.** Before a block, know which questions are in
+  it and why those first. After it, know what the answers changed.
+- **Keep going until coverage is complete.** A long conversation is not a
+  finished phase, and neither is a tired one.
+- **Update the forecast after every block**, with `--author agent` when the
+  numbers are your reading. They usually are.
 
 ### Breadth before depth, and depth declared
 
@@ -320,6 +378,31 @@ When interactions concentrate in a few modules while many stay untouched,
 `plangonaut status` and `plangonaut next` report the imbalance with the threshold
 that triggered it. The warning does not forbid the deep dive. It requires that you
 put it to the user: continue here, or widen. Record the answer either way.
+
+## What a turn looks like
+
+When you need an answer, the questions come **first**. Everything else is
+context for them or a report about what you did, and both belong underneath.
+
+    1. The questions. One to three, by interaction mode. Each with the one
+       or two sentences needed to answer it, and nothing more.
+    2. What the previous answers changed. Two or three lines.
+    3. Coverage now. Modules confirmed / in progress / never opened.
+    4. The forecast, and whose it is.
+    5. The next action.
+
+Analysis, reasoning, command output and record-keeping go into the project's
+documents, or are shown when asked for. A reader who has to scroll past a report
+to find what you need from them will answer badly, or not at all.
+
+Do not end a turn with *"shall I continue?"* when the plan already says what the
+next block is. Say what it is and ask it.
+
+**`ASKED` means shown.** A question becomes `ASKED` when it has actually been put
+to the user — not when you decided to ask it. One you have prepared and not yet
+shown is `--planned`, and the engine now refuses more concurrent `ASKED`
+questions than the interaction mode puts in a turn, because more than that cannot
+have been shown together.
 
 ## Human override
 
@@ -390,6 +473,27 @@ Respect existing authorization for recording answers; do not wait until blueprin
 The two commands are one flow: `doc-diff` writes nothing and returns a `confirmation_token`; you read the diff, which is the review the token attests to; `doc-save` takes that token in `--confirm-token` and will not run without it. Run `plangonaut doc-save --help` for the whole of it. If you have already written a file by hand, pass that same file as `--content-file`: identical bytes are adopted into the ledger rather than overwritten, so nothing is lost.
 
 `plangonaut validate` reports Markdown that looks governed and is not, and `--strict` makes it a failure. Retain versions and diffs in `.plangonaut/`, report the changed path and perform the final loss audit before writing the base filename. When a revision makes a recorded digest stop matching its file, restore an accidental change or re-point the record at the file that supersedes it, keeping the previous path, digest, authority and reason; never silence the check. Templates are defaults, not mandatory filenames. Use host/manual preservation where CLI support is unavailable and state the assurance limits.
+
+### A document you wrote is not a decision
+
+An analysis you produce is your reading of the folder. Governing it gives it a
+digest, a revision and an owner; it does not give it authority. A governed
+document is still, in substance, whatever it was when you wrote it.
+
+So every document you author marks its own contents:
+
+- what is **verified**, with where you verified it;
+- what is **assumed**, and what would confirm or break the assumption;
+- what you **propose**, plainly labelled as yours;
+- what is still **owed by the user**, as questions, with their ids.
+
+And writing does not substitute for asking. A chapter of careful analysis where a
+question was needed leaves the project exactly as undecided as before, with more
+pages. If the answer belongs to the user, the deliverable is the question.
+
+`plangonaut handoff-check` reports a governed document that cites a record which
+does not exist — a document naming `DEC-0007` is telling a reader to go and find
+`DEC-0007`.
 
 ## Project agent-system design boundary
 

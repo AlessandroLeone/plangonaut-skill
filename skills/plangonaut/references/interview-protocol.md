@@ -129,6 +129,23 @@ Use the interaction mode confirmed at Gate G0:
 - Standard: up to two related questions with balanced depth;
 - Expert: up to three related questions with more technical discussion and explicit challenge; evidence follows project risk in every mode.
 
+These limits are now enforced: `qa-ask` refuses to open more concurrent
+unanswered questions than the mode puts to a user in a turn. `--planned` is
+always allowed. `ASKED` means the question was shown to somebody; it is not a
+synonym for "written down", and a batch of questions recorded as asked and never
+put is a folder that reads as an interview and is not one.
+
+**Questions come before the report, not after it.** A turn that ends with a
+summary and the questions underneath is a turn whose questions get skipped. Put
+what you need answered first, then what you found.
+
+**The interview is exhaustive, and its length comes from the gaps.** There is no
+target number of questions and no round at which it is polite to stop. It ends
+when every applicable module is `CONFIRMED`, `NOT_APPLICABLE` or `DEFERRED` with
+a recorded reason -- not when the agent judges it has enough to write a document.
+An interview that stops early produces a dossier whose confidence is unearned,
+and nothing downstream can tell the difference.
+
 Never reduce safety warnings, blockers, or verification evidence. Allow `pause`, `recap`, `back`, `defer`, and `why` at any time. When the user says the project is sufficient for now, close only the approved current milestone and record remaining applicable work as deferred future scope.
 
 ## When to research
