@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.3.0-alpha.6.dev (unreleased)
+
+Not published. Nothing here is on npm, carries a tag or a GitHub Release, or is
+served by the site; `0.3.0-alpha.5` remains the published Skill and CLI, and
+Studio remains `0.3.0-alpha.4`.
+
+The same pilot that produced `0.3.0-alpha.5` produced a second, harder finding
+once the ten defects were closed: the folder read as settled while nothing had
+been settled. The engine was intact throughout, every command answered OK, and
+the record said the project had decided things nobody had decided. That is one
+defect wearing several faces, and this cycle closes them.
+
+**Four kinds of statement, and only one of them is a decision.** Reading a folder
+authorises an agent to record *facts*. It does not authorise turning existing
+code, prototypes, comments, recommendations or prior behaviour into future
+decisions. A verified fact, a necessary technical consequence, an agent's
+proposal and a user's decision are four different things, and the skill now names
+them, requires each recorded line to be one of them, and says which of the four
+may ever become `APPROVED`.
+
+**An approval names who approved it.** An `APPROVED` decision carries
+`provenance` from one of three roads and no fourth: a settled question whose
+answer names it, a recorded override, or a statement in the decider's own words
+in a file inside the project, hashed. The third road exists because Adoption and
+Reconstruction are real modes and a rule satisfiable only by a Plangonaut
+interview would make them unusable. Decisions written by an earlier engine are
+reported, never retrofitted -- nobody can now tell, and saying so is the honest
+answer.
+
+Where it is enforced was decided by measurement, not by preference. Refusing the
+write was implemented first and broke eighty-seven call sites that use `APPROVED`
+as a fixture status; compatibility with existing projects was a requirement, and
+a refusal there is a migration rather than a guarantee. So the write names what
+is missing and lists the three roads, `validate` reports it, `validate --strict`
+fails on it, and `handoff-check` blocks -- a folder is not handed over resting on
+an approval nobody can trace.
+
+**A module is confirmed against its own ledger.** `CONFIRMED` says the project
+may build on the module. Four things in the module's records contradict it: an
+open or unapplied question, a decision from its interview still `PROPOSED`, an
+unprovenanced approval, and nothing recorded against it at all -- a module with
+an empty ledger has no coverage to confirm. Named at the write, enforced at
+`validate --strict` and `handoff-check`. Module 0 is exempt from the last, since
+`init` confirms it from the owners file.
+
+**`ASKED` means shown.** `qa-ask` refuses to open more concurrent unanswered
+questions than the interaction mode puts to a user in a turn -- one, two or three
+for Guided, Standard and Expert. `--planned` is always available, because writing
+down a question you intend to ask is a different act from asking it. This one
+refuses at the write, and can: there is no legitimate batch use of `ASKED`.
+
+**A forecast says whose numbers it is.** `forecast` requires `--author
+agent|human`, recorded as `authored_by`. `recorded_by` is the owner under whose
+authority the command ran, which is a different fact and was being read as though
+it were this one; `resume` now renders an agent's forecast as an estimate rather
+than as a commitment anyone made.
+
+**Prose is checked against the ledger.** `validate` reports governed documents
+citing record identifiers the project does not hold, and reports every place the
+documents and the typed records disagree. `--strict` now fails on these, which it
+did not: the warning printed at an unprovenanced approval promised that it would,
+and the synthetic pilot caught the engine not keeping its own promise.
+
+**handoff-check sees what it cannot govern.** A working-file document no artifact
+claims is blocking, with the outside references it carries reported alongside;
+every blocking finding says how it can be closed.
+
+**A document you wrote is not a decision.** The skill now states that a document
+an agent authored acquires no authority by existing, however governed it is, and
+that `re-record` refuses an unusable source without echoing the rejected path
+back as the remedy.
+
+Compatibility: no field is removed or made required on an existing project. A
+project written by `0.3.0-alpha.5` loads, validates and continues; what is new is
+reported, not refused. The state schema gains two optional blocks --
+`provenance` on a decision and `authored_by` on the forecast.
+
+
 ## 0.3.0-alpha.5
 
 The first real pilot -- a whole planning session on an actual project, not a
