@@ -336,6 +336,16 @@ interface ProgressForecast {
 interface State {
   schema_version: number;
   beave_version: string;
+  /**
+   * The engine that most recently committed to this project.
+   *
+   * Optional, and it has to stay optional: a project written before this
+   * field existed does not carry it and is not invalid. Absent means the
+   * information was never recorded, which is a different statement from the
+   * engine never having changed, and `status` says which of the two it is
+   * looking at rather than merging them.
+   */
+  last_engine_version?: string;
   project: Project;
   interaction_mode: string;
   intake_strategy: string;
@@ -399,6 +409,20 @@ interface State {
   interview_log_since?: string;
   /** Digest of the derived document, so a hand edit to it is detectable. */
   interview_view?: { path: string; sha256: string } | null;
+  /**
+   * Which directories this project governs, what it deliberately does not, and
+   * what documentation was already in the folder.
+   *
+   * Optional for the same reason the two ledgers above are: a project written by
+   * an earlier engine does not carry it and is not invalid. Its absence is read
+   * as "nothing was recorded about this folder's existing documents", which is
+   * narrower than an empty list and is treated as such — see `unclaimedDocuments`.
+   */
+  document_governance?: {
+    directories: string[];
+    exclusions: string[];
+    preexisting: string[] | null;
+  };
   human_overrides: Override[];
   needs_reconciliation: boolean;
   revision: number;
@@ -409,7 +433,7 @@ interface State {
 }
 
 // Flags that stand alone: they carry approval, not a value.
-const BOOLEAN_FLAGS = new Set(["dry-run", "resume", "discard-changes", "accept-base-overwrite", "replace-human-next-action", "planned", "reconstructed", "regenerate", "open", "last", "json", "verify", "repair", "apply", "force", "crosscutting"]);
+const BOOLEAN_FLAGS = new Set(["dry-run", "resume", "discard-changes", "accept-base-overwrite", "replace-human-next-action", "planned", "reconstructed", "regenerate", "open", "last", "json", "verify", "repair", "apply", "force", "crosscutting", "strict", "help", "migrate-backups"]);
 
 /** Line separator used where a template literal would be harder to read. */
 const NL = "\n";
@@ -467,7 +491,10 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   status: ["project-root"],
   next: ["project-root", "count"],
   resume: ["project-root"],
-  validate: ["project-root"],
+  validate: ["project-root", "strict"],
+  "migrate-backups": ["project-root", "apply"],
+  "handoff-check": ["project-root", "json"],
+  govern: ["project-root", "exclude", "include", "reason", "owner", "operation-id"],
   migrate: ["project-root", "operation-id"],
   "migrate-brand": ["project-root", "dry-run", "resume", "rollback", "discard-changes"],
   // Reading and repairing are the same command because they answer the same
@@ -560,6 +587,34 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   ],
   "qa-log": ["project-root", "open", "last", "json", "regenerate", "id"],
 };
+
+/**
+ * The option table, for a check that reads the documentation.
+ *
+ * Exported so a test can hold every published example against the real command
+ * surface instead of against a second list of it. The pilot's agent ran the
+ * skill's first `qa-ask` example and was refused for a missing `--operation-id`;
+ * none of the three examples in that section had one, while `user-guide.md`'s did.
+ * Nobody had a way to notice, because nothing compared the prose to the parser.
+ * Now something does, and an example that would not run fails the build instead
+ * of an agent.
+ */
+export function commandSurface(): {
+  options: Record<string, string[]>;
+  booleans: string[];
+  mutating: string[];
+} {
+  return {
+    options: Object.fromEntries(Object.entries(COMMAND_OPTIONS).map(([name, list]) => [name, [...list]])),
+    booleans: [...BOOLEAN_FLAGS],
+    // A command is mutating if its own option list admits `--operation-id`:
+    // that is what `assertKnownOptions` enforces, so the two cannot drift.
+    mutating: Object.entries(COMMAND_OPTIONS)
+      .filter(([name, list]) => list.includes("operation-id") && name !== "migrate-brand")
+      .map(([name]) => name)
+      .sort(),
+  };
+}
 
 function assertKnownOptions(command: string, flags: Flags): void {
   const allowed = COMMAND_OPTIONS[command];
@@ -804,12 +859,39 @@ function readJson(location: string, kind: ErrorKind = "COMMAND_FAILED"): any {
   }
 }
 
-function backupName(location: string): string {
+/** Where the backups of project files live, under the ledger and not beside them. */
+const DOCUMENT_BACKUPS = "backups/documents";
+
+/**
+ * The copy kept of whatever a write is about to replace, and where it goes.
+ *
+ * For a file inside the ledger this has always been `.plangonaut/backups/`, and
+ * that is right. For a file in the project it was `backups/` **next to the file**
+ * — so a governed document in `docs/` left copies in `docs/backups/`, and the
+ * interview view at the root left them in the root. The pilot's folder had 21 of
+ * them there, untracked, and they were the first thing `git status` showed on a
+ * project that was otherwise clean. A tool that asks not to be written outside
+ * its own directory should not be the one writing outside it.
+ *
+ * With `root`, a file outside the state directory backs up under
+ * `.plangonaut/backups/documents/`, keeping its project-relative path in the
+ * name so `docs/a.md` and `notes/a.md` cannot collide. Without `root` — the
+ * ledger's own files — nothing changes.
+ */
+function backupName(location: string, root?: string): string {
   const stamp = new Date().toISOString().replaceAll(":", "").replaceAll(".", "");
+  if (root) {
+    const ledger = stateRoot(root);
+    const insideLedger = !path.relative(ledger, location).startsWith("..") && !path.isAbsolute(path.relative(ledger, location));
+    if (!insideLedger) {
+      const relative = canonicalRelative(path.relative(root, location)) || path.basename(location);
+      return path.join(ledger, ...DOCUMENT_BACKUPS.split("/"), `${relative.replaceAll("/", "__")}.${stamp}.bak`);
+    }
+  }
   return path.join(path.dirname(location), "backups", `${path.basename(location)}.${stamp}.bak`);
 }
 
-function atomicWrite(location: string, content: string | Buffer): void {
+function atomicWrite(location: string, content: string | Buffer, root?: string): void {
   fs.mkdirSync(path.dirname(location), { recursive: true });
   if (fs.existsSync(location)) {
     const existing = fs.readFileSync(location);
@@ -829,7 +911,7 @@ function atomicWrite(location: string, content: string | Buffer): void {
     const pureAppend =
       next.length >= existing.length && next.subarray(0, existing.length).equals(existing);
     if (!pureAppend) {
-      const backup = backupName(location);
+      const backup = backupName(location, root);
       fs.mkdirSync(path.dirname(backup), { recursive: true });
       fs.copyFileSync(location, backup);
     }
@@ -1998,6 +2080,23 @@ function commitState(root: string, location: string, state: State, event: any, o
       operation_payload_version: pendingOperation.payloadVersion,
     });
   }
+  /*
+   * Which engine last wrote to this project.
+   *
+   * `beave_version` is set by `init`, `migrate` and `baseline` and by nothing
+   * else, so it answers "what created this" and was read for two turns as "what
+   * version this project is on". Those are different facts, and the difference
+   * cost a misattribution: a pilot run with `0.3.0-alpha.3` on the PATH produced
+   * a state saying `0.3.0-alpha.3`, and the review of it was filed under
+   * `alpha4` because nothing anywhere said which engine had actually been doing
+   * the work.
+   *
+   * Set here rather than in each command, because here is the one place every
+   * mutation passes through. It rides the state patch like every other field, so
+   * replay reproduces it and no event format changes.
+   */
+  state.last_engine_version = VERSION;
+
   const errors = stateErrors(root, state, event);
   if (errors.length) {
     throw new PlangonautError(`Transaction failed validation:\n- ${errors.join("\n- ")}`);
@@ -2878,7 +2977,113 @@ function advanceGeneratedNextAction(state: State, generated: string): string | n
     state.exact_next_action = generated;
     return null;
   }
-  return `The recorded exact next action was written by a person, so it is kept unchanged. Suggested instead: ${generated}\nTo replace it deliberately, use plangonaut checkpoint --next-action or plangonaut reconcile --next-action.`;
+  // Composed here, counted where it is printed.
+  //
+  // Counting here made the number a lie, which the first run of it showed:
+  // `qa-ask` and `qa-answer` both compute this note and may discard it, so by
+  // the first `qa-settle` that actually printed anything the ledger already
+  // said "2nd time" about a sentence nobody had yet seen once. An occurrence
+  // counter has to count occurrences, not opportunities.
+  return (
+    `The recorded exact next action was written by a person, so it is kept unchanged. Suggested instead: ${generated}\n` +
+    `To replace it deliberately, use plangonaut checkpoint --next-action or plangonaut reconcile --next-action.`
+  );
+}
+
+/**
+ * The next-action note as it should reach the terminal: full once, then brief.
+ *
+ * The brief form keeps the suggestion and drops the explanation, which is the
+ * only split that makes sense here. The suggestion is different every time — it
+ * names the module or the operation the engine would have pointed at — so
+ * dropping it would lose information with each repetition. The two lines about
+ * *why* the sentence was kept and *how* to replace it deliberately are identical
+ * on every occurrence, and those are what stop being read.
+ */
+function nextActionNotice(root: string, note: string): string {
+  const suggestion = /Suggested instead:\s*([^\n]+)/.exec(note)?.[1]?.trim();
+  return echoNotice(
+    root,
+    "human-next-action-kept",
+    note,
+    `The exact next action is still the one a person wrote; it was kept.` +
+      (suggestion ? ` Suggested instead: ${suggestion}` : "")
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Notices that are right to give and wrong to repeat
+// ---------------------------------------------------------------------------
+
+/**
+ * A standing condition said in full once, then briefly, and counted.
+ *
+ * The rule the pilot ran into is a good rule: a next action a person wrote is
+ * not overwritten by the engine, and the engine says so instead of doing it in
+ * silence. What went wrong is repetition. Every `qa-settle` printed the same two
+ * lines, six times in one session, about a condition that had not changed since
+ * the first — and a warning printed identically six times is not read the sixth
+ * time, or the second. Volume was defeating the rule it was there to enforce.
+ *
+ * Suppression is therefore about *repetition*, not about the rule: the condition
+ * is still reported every single time, and the first report is complete. What
+ * shrinks is the restatement. The count is kept so the brief form can say how
+ * many times this has now happened, which is information the full text never
+ * carried.
+ *
+ * It lives in `.plangonaut/notices.json` rather than in `state.json` on purpose.
+ * It is bookkeeping about what this machine has already printed — not a fact
+ * about the project, not replayable, not something that should travel in the
+ * package or bump a revision. `stateDigest` skips it for the same reason it
+ * skips `lock.json`.
+ */
+const NOTICES_FILE = "notices.json";
+
+function recordNotice(root: string, key: string): number {
+  const location = path.join(stateRoot(root), NOTICES_FILE);
+  let ledger: Record<string, { count: number; first_at: string; last_at: string }> = {};
+  try {
+    ledger = JSON.parse(fs.readFileSync(location, "utf8"));
+    if (!ledger || typeof ledger !== "object") ledger = {};
+  } catch {
+    ledger = {};
+  }
+  const at = now();
+  const entry = ledger[key];
+  const count = (entry?.count ?? 0) + 1;
+  ledger[key] = { count, first_at: entry?.first_at ?? at, last_at: at };
+  try {
+    fs.mkdirSync(path.dirname(location), { recursive: true });
+    fs.writeFileSync(location, `${JSON.stringify(ledger, null, 2)}\n`, "utf8");
+  } catch {
+    // A notice ledger that cannot be written must never fail an operation. The
+    // cost is that the full text is printed again, which is the old behaviour.
+  }
+  return count;
+}
+
+/** Everything this machine has been told, and how often. For `status`. */
+function noticeSummary(root: string): Record<string, { count: number; first_at: string; last_at: string }> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(stateRoot(root), NOTICES_FILE), "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** `2nd`, `3rd`, `11th`: English ordinals, including the three that are not -th. */
+function ordinal(value: number): string {
+  const tens = value % 100;
+  if (tens >= 11 && tens <= 13) return `${value}th`;
+  return `${value}${({ 1: "st", 2: "nd", 3: "rd" } as Record<number, string>)[value % 10] ?? "th"}`;
+}
+
+/** The full text the first time, a one-line restatement afterwards. */
+function echoNotice(root: string, key: string, full: string, brief: string): string {
+  const count = recordNotice(root, key);
+  if (count === 1) return full;
+  return `${brief} (${ordinal(count)} time on this project; plangonaut status reports every standing notice and its count)`;
 }
 
 function validTypedId(value: unknown, prefix: string): boolean {
@@ -3358,7 +3563,15 @@ function forecastEntryErrors(entry: any, label: string): string[] {
 
 function stateErrors(root: string, state: State, pendingEvent?: any): string[] {
   const errors: string[] = [];
-  if (state.schema_version !== SCHEMA_VERSION) errors.push(`unsupported schema_version=${state.schema_version}`);
+  // A refusal that names the remedy, because this one is reached by opening an
+  // older project — the moment somebody most needs to be told what to do, and
+  // the moment `unsupported schema_version=2` told them least.
+  if (state.schema_version !== SCHEMA_VERSION)
+    errors.push(
+      `unsupported schema_version=${state.schema_version}: this engine (${VERSION}) writes schema ${SCHEMA_VERSION}. ` +
+      `The project needs migrating before it can be read: plangonaut migrate --project-root . --operation-id <id>. ` +
+      `Nothing has been changed.`
+    );
   // A refusal that blocks every command has to say what unblocks it. See the
   // matching message in `docop.rs`: both implementations say the same thing.
   if (state.project?.root !== root)
@@ -3579,6 +3792,15 @@ function contextMarkdown(state: State, forecastHistoryEntries = 0): string {
     `- Gate: ${state.current_gate}`,
     `- Interaction: ${state.interaction_mode}`,
     `- Exact next action: ${state.exact_next_action}`, "",
+    // Which engine produced what follows, before anything that follows.
+    //
+    // The context pack is what a fresh agent reads instead of the conversation,
+    // and "which Plangonaut wrote this" is the first thing it cannot afford to
+    // guess. A pilot was attributed to the wrong release because this was
+    // nowhere: the reader had the whole folder and still could not say which
+    // engine had done the work without opening `state.json` by hand.
+    "## Versions", "",
+    ...provenanceLines(state), "",
     // Deliberately next to status and the next action, and above everything else:
     // resume is what a fresh agent reads instead of the chat, so a forecast it
     // cannot see does not exist.
@@ -3677,8 +3899,29 @@ function init(flags: Flags): void {
     // date can be read as "no questions were asked".
     interview_log_since: timestamp,
     interview_view: null,
-    human_overrides: [], 
-    needs_reconciliation: false, 
+    /*
+     * What this project expects to govern, recorded at the one moment it can be
+     * recorded truthfully.
+     *
+     * `preexisting` is the whole reason this is written at `init` rather than
+     * computed later. Plangonaut is entered on empty folders and on repositories
+     * with years of documentation in them, and after the fact those two are
+     * indistinguishable: every Markdown file is simply there. Listed here, the
+     * folder's existing documentation is known to be the folder's, and a file
+     * that appears afterwards inside a governed directory is known to be new.
+     * Without the list, the only honest signal left is the `-vN` name.
+     *
+     * `exclusions` is empty and stays empty unless a person writes in it. It is
+     * where a deliberate decision not to govern a file is recorded, so that the
+     * warning about it stops for a reason instead of being ignored.
+     */
+    document_governance: {
+      directories: [...DEFAULT_GOVERNED_DIRECTORIES],
+      exclusions: [],
+      preexisting: markdownFiles(root),
+    },
+    human_overrides: [],
+    needs_reconciliation: false,
     revision: 1, 
     last_event_id: eventId,
     exact_next_action: "Run `plangonaut next --project-root .` and discuss module 1.",
@@ -3729,7 +3972,46 @@ function init(flags: Flags): void {
     if (fs.existsSync(transaction)) rollbackFileTransaction(root, transaction);
     throw error;
   }
+  const ignored = ensureGitignoreEntries(root);
   console.log(`Initialized Plangonaut state at ${destination}`);
+  if (ignored.length) {
+    console.log(`\nAdded to .gitignore: ${ignored.join(", ")}`);
+    console.log(`Only those two. The state, the events, the interview history and the evidence are deliberately not ignored — they are the project's record and they travel with it.`);
+  }
+}
+
+/**
+ * The two Plangonaut paths a repository should not carry, and no others.
+ *
+ * `backups/` holds recoverable copies of files whose current version is already
+ * tracked, and `lock.json` names a process on one machine. Everything else the
+ * ledger writes — `state.json`, `events.jsonl`, the interview history, the
+ * evidence — is the record the folder exists to carry, and ignoring any of it
+ * would defeat the product. An existing `.gitignore` is appended to, never
+ * rewritten, and a line already present is not added twice.
+ */
+function ensureGitignoreEntries(root: string): string[] {
+  const wanted = [`${STATE_DIR}/backups/`, `${STATE_DIR}/lock.json`];
+  const location = path.join(root, ".gitignore");
+  let existing = "";
+  try {
+    existing = fs.readFileSync(location, "utf8");
+  } catch {
+    existing = "";
+  }
+  const present = new Set(existing.split(/\r?\n/).map((line) => line.trim()));
+  const missing = wanted.filter((entry) => !present.has(entry) && !present.has(entry.replace(/\/$/, "")));
+  if (!missing.length) return [];
+  const block = [
+    `# Plangonaut: recoverable copies and a machine-local lock.`,
+    `# The state, events, interview history and evidence are NOT ignored: they are`,
+    `# the record this folder exists to carry.`,
+    ...missing,
+  ].join("\n");
+  const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
+  const separator = existing ? "\n" : "";
+  fs.writeFileSync(location, `${existing}${prefix}${separator}${block}\n`, "utf8");
+  return missing;
 }
 
 /**
@@ -3749,19 +4031,49 @@ function init(flags: Flags): void {
  * belongs to `validate`, which is the command whose whole job is to say whether
  * what is recorded still matches what is on disk.
  */
+/**
+ * The stand-in a repair command shows when the recorded path cannot be reused.
+ *
+ * The pilot caught the engine dictating its own defect back: an override
+ * recorded against `../../../Users/.../scratchpad/ovr1.txt` was refused, and the
+ * refusal's own suggested command carried that same path in `--source-file`. An
+ * agent that pastes it re-records the unportable path, `validate` fails again,
+ * and `source_history` gains an entry documenting a repair that repaired
+ * nothing. It is the one place the engine tells the caller what to type, so it
+ * is the one place a wrong suggestion is guaranteed to be followed.
+ *
+ * A placeholder is used instead of a guess. The engine does not know where the
+ * file should live — that is the author's decision — and inventing a plausible
+ * destination would be a second way of dictating something untrue. What it does
+ * know is that the path has to start inside the project, so the placeholder says
+ * that and nothing more. It is deliberately not a valid path: a command that
+ * cannot run by accident is better than one that runs and records a guess.
+ */
+const PORTABLE_SOURCE_PLACEHOLDER = "<path-inside-the-project>";
+
 function recordedDigestErrors(root: string, state: State): string[] {
   const errors: string[] = [];
-  const check = (label: string, relative: unknown, digest: unknown, remedy: string) => {
+  const check = (label: string, relative: unknown, digest: unknown, remedy: (source: string) => string) => {
     if (typeof relative !== "string" || !relative.trim()) return;
     if (typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest)) return;
     const file = existingFileInside(root, relative);
     if (!file) {
-      errors.push(`${label} records evidence at ${relative}, which is missing or escapes the project root. Restore the file, or point the record at the file that stands in its place: ${remedy}`);
+      // Two different situations arrive here and they need two different
+      // instructions. A portable path whose file was deleted is repaired by
+      // restoring or replacing that file, so the path is worth showing. A path
+      // that was never portable cannot be repaired by pointing at it again.
+      const portable = safeArtifactPath(relative);
+      errors.push(
+        portable
+          ? `${label} records evidence at ${relative}, which is missing. Restore the file, or point the record at the file that stands in its place: ${remedy(relative)}`
+          : `${label} records evidence at ${relative}, which is outside the folder that travels with the project, so the record cannot be read by whoever receives it. ` +
+            `Copy the file into the project first, then re-record against its path relative to the root: ${remedy(PORTABLE_SOURCE_PLACEHOLDER)}`
+      );
       return;
     }
     if (sha256(fs.readFileSync(file)) !== digest) {
       errors.push(
-        `${label} recorded ${relative} with a digest that no longer matches the file. Re-record it against the current file, or restore the recorded content. To re-record: ${remedy}`
+        `${label} recorded ${relative} with a digest that no longer matches the file. Re-record it against the current file, or restore the recorded content. To re-record: ${remedy(relative)}`
       );
     }
   };
@@ -3771,7 +4083,8 @@ function recordedDigestErrors(root: string, state: State): string[] {
       `module ${item.id}`,
       item.evidence,
       (item as any).evidence_sha256,
-      `plangonaut record --project-root . --module ${item.id} --status ${item.status?.replaceAll(" ", "_") ?? "<status>"} --owner <owner> --answer-file ${item.evidence} --operation-id <id>`
+      (source) =>
+        `plangonaut record --project-root . --module ${item.id} --status ${item.status?.replaceAll(" ", "_") ?? "<status>"} --owner <owner> --answer-file ${source} --operation-id <id>`
     );
   }
   for (const item of state.human_overrides ?? []) {
@@ -3779,7 +4092,8 @@ function recordedDigestErrors(root: string, state: State): string[] {
       `override ${item.id}`,
       (item as any).source,
       (item as any).source_sha256,
-      `plangonaut re-record --project-root . --kind override --id ${item.id} --source-file ${(item as any).source} --owner <owner> --reason "<why the source changed>" --operation-id <id>`
+      (source) =>
+        `plangonaut re-record --project-root . --kind override --id ${item.id} --source-file ${source} --owner <owner> --reason "<why the source changed>" --operation-id <id>`
     );
   }
   // B5. A gate is the record that says a phase may end, and its evidence is the
@@ -3811,7 +4125,8 @@ function recordedDigestErrors(root: string, state: State): string[] {
       `gate ${item.name || item.id}`,
       (item as any).evidence,
       (item as any).evidence_sha256,
-      `plangonaut re-record --project-root . --kind gate --id ${item.name || item.id} --source-file ${(item as any).evidence} --owner <owner> --reason "<why the evidence changed>" --operation-id <id>`
+      (source) =>
+        `plangonaut re-record --project-root . --kind gate --id ${item.name || item.id} --source-file ${source} --owner <owner> --reason "<why the evidence changed>" --operation-id <id>`
     );
   }
 
@@ -4237,6 +4552,872 @@ function historyErrors(root: string, state: State): { errors: string[]; notes: s
   return { errors: [outcome.reason!], notes: [] };
 }
 
+// ---------------------------------------------------------------------------
+// Governed documents: the ones Plangonaut writes, and the ones it only finds
+//
+// Plangonaut cannot stop an agent writing a file. It has a filesystem and a
+// shell, and no amount of instruction removes them. The pilot demonstrated the
+// consequence rather than the risk: the most important document in the project —
+// its architecture — was written straight to `docs/…-v1.md` by hand, carried no
+// digest, could be changed by anyone without anything noticing, and `validate`
+// answered *"Plangonaut state is valid."* for the whole session. It entered the
+// ledger only because a person happened to ask.
+//
+// The lever is therefore not prevention, it is detection, and the agent's own
+// mistake is what makes detection cheap. The skill asks for one visible working
+// file per logical document with a `-vN` suffix; the agent followed that
+// convention exactly and skipped the command that implements it. So a file named
+// `something-v1.md` that no artifact claims is almost never a coincidence: it is
+// the shape of this precise mistake. That is the high-precision signal.
+//
+// Two tiers, because one would either miss things or shout at innocent files:
+//
+//  - **versioned** — `*-v<N>.md` anywhere in the project. Reported always. A
+//    repository that happens to hold one is rare; an agent that made this
+//    mistake produces one every time.
+//  - **governed directory** — any other Markdown file inside a declared governed
+//    directory that did not exist when the project was initialised. Reported
+//    only when the project recorded what was already there, so adopting a
+//    repository with two hundred existing documents does not light up.
+//
+// What is never reported: the conventional files every repository has
+// (`README`, `CHANGELOG`, `LICENSE`, `CONTRIBUTING`, agent instruction files),
+// anything inside a dependency or build directory, anything inside the ledger's
+// own directories, the derived interview view, and whatever the project listed
+// in `document_governance.exclusions` — the escape hatch for a file deliberately
+// kept outside the ledger.
+//
+// A project initialised by an older engine carries no `document_governance`. It
+// gets the versioned tier only: without a record of what was already there, the
+// second tier cannot tell an agent's new file from a document that predates
+// Plangonaut, and guessing would make the warning worthless on exactly the
+// projects that have the most to lose.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Backups written before this release, and what happens to them
+// ---------------------------------------------------------------------------
+
+/**
+ * `backups/` directories in the project that this engine no longer writes to.
+ *
+ * They are found, reported and left alone. Moving them silently would be the
+ * same class of act as writing them there in the first place: a tool deciding
+ * on its own what happens to files in somebody's folder. They also *are*
+ * backups — the last copy of a document revision may be in one — so deleting
+ * them is out of the question and moving them without being asked is close to it.
+ */
+function legacyBackupDirectories(root: string): Array<{ relative: string; files: number }> {
+  const ledger = stateRoot(root);
+  const found: Array<{ relative: string; files: number }> = [];
+  const walk = (directory: string, prefix: string, depth: number): void => {
+    if (depth > 6) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      const absolute = path.join(directory, entry.name);
+      if (path.resolve(absolute) === path.resolve(ledger)) continue;
+      if (UNSCANNED_DIRECTORIES.has(entry.name.toLowerCase())) continue;
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.name === "backups") {
+        const files = fs.readdirSync(absolute).filter((name) => name.endsWith(".bak")).length;
+        if (files) found.push({ relative, files });
+        continue;
+      }
+      walk(absolute, relative, depth + 1);
+    }
+  };
+  walk(root, "", 0);
+  return found;
+}
+
+/**
+ * Move the old backups under the ledger, on request and never otherwise.
+ *
+ * Bytes are preserved — the files are copied and verified by digest before the
+ * originals go — and a receipt records where each one came from, so the move is
+ * reversible by reading it. `--apply` is what performs it; without the flag this
+ * reports what it would do and writes nothing.
+ */
+function migrateBackups(flags: Flags): void {
+  const root = resolveProject(required(flags, "project-root"));
+  const legacy = legacyBackupDirectories(root);
+  if (!legacy.length) {
+    console.log(`No backups directory outside ${STATE_DIR}/. Nothing to migrate.`);
+    return;
+  }
+  const destination = path.join(stateRoot(root), ...DOCUMENT_BACKUPS.split("/"));
+  const total = legacy.reduce((sum, entry) => sum + entry.files, 0);
+  if (flags.apply !== true) {
+    console.log(`${total} backup file${total === 1 ? "" : "s"} in ${legacy.length} director${legacy.length === 1 ? "y" : "ies"} would move under ${STATE_DIR}/${DOCUMENT_BACKUPS}/:`);
+    for (const entry of legacy) console.log(`  ${entry.relative}/  (${entry.files})`);
+    console.log(``);
+    console.log(`Nothing was written. To perform it: plangonaut migrate-backups --project-root . --apply`);
+    console.log(`The files are copied and verified by digest before the originals are removed, and a receipt records where each one came from.`);
+    return;
+  }
+  fs.mkdirSync(destination, { recursive: true });
+  const moved: Array<{ from: string; to: string; sha256: string }> = [];
+  for (const entry of legacy) {
+    const directory = path.join(root, entry.relative);
+    for (const name of fs.readdirSync(directory).filter((item) => item.endsWith(".bak"))) {
+      const source = path.join(directory, name);
+      const bytes = fs.readFileSync(source);
+      const digest = sha256(bytes);
+      const prefix = entry.relative === "backups" ? "" : `${entry.relative.replace(/\/backups$/, "").replaceAll("/", "__")}__`;
+      let target = path.join(destination, `${prefix}${name}`);
+      // A name already taken is kept, not replaced: two identical names from two
+      // directories are two different files.
+      let attempt = 1;
+      while (fs.existsSync(target)) target = path.join(destination, `${prefix}${name}.${attempt++}`);
+      fs.copyFileSync(source, target);
+      if (sha256(fs.readFileSync(target)) !== digest) {
+        throw new PlangonautError(`Copy of ${entry.relative}/${name} does not match its source. The original has been left where it is.`);
+      }
+      fs.rmSync(source);
+      moved.push({ from: `${entry.relative}/${name}`, to: canonicalRelative(path.relative(root, target)), sha256: digest });
+    }
+    if (!fs.readdirSync(directory).length) fs.rmdirSync(directory);
+  }
+  const receipt = path.join(destination, `migration-${new Date().toISOString().replaceAll(":", "").replaceAll(".", "")}.json`);
+  fs.writeFileSync(receipt, `${JSON.stringify({ moved_at: now(), engine: VERSION, moved }, null, 2)}\n`, "utf8");
+  console.log(`Moved ${moved.length} backup file${moved.length === 1 ? "" : "s"} under ${STATE_DIR}/${DOCUMENT_BACKUPS}/.`);
+  console.log(`Every copy was verified by digest before its original was removed.`);
+  console.log(`Receipt: ${canonicalRelative(path.relative(root, receipt))} — it records where each file came from, so the move can be undone by reading it.`);
+}
+
+// ---------------------------------------------------------------------------
+// Handoff: integrity is not sufficiency
+// ---------------------------------------------------------------------------
+
+/**
+ * References in a governed document that point outside the folder it travels in.
+ *
+ * `project-export` / `project-verify` prove a package arrived **intact**: every
+ * file in the manifest, every digest matching. They have never had anything to
+ * say about whether it is **sufficient**. A governed document whose entire
+ * technical foundation is seven modules under `C:\\...\\release-tools\\` passes
+ * `project-verify` without a remark, because that path is not a file of the
+ * package and therefore is not in the manifest. Integrity is proved; completeness
+ * is not looked at.
+ *
+ * The pilot is the case. Its brief built the whole strategy on a table of modules
+ * living under an absolute path on one machine — one of them named wrongly — and
+ * the architecture document leaned on the same files again. A recipient opening
+ * that folder gets a table of reusable modules it cannot open, on a machine where
+ * that path almost certainly does not exist.
+ *
+ * **Not every outside reference is a defect**, and treating them alike would make
+ * the check useless: a document may legitimately cite where something came from,
+ * show an example, or link to something informative. What must not happen is that
+ * a *dependency the work needs* is left as a path nobody else can resolve. The
+ * engine cannot read intent, so the document declares it, with a marker on the
+ * same line:
+ *
+ *   (external dependency)   needed, deliberately not delivered — reported, allowed
+ *   (historical reference)  where this came from — allowed
+ *   (example)               illustrative — allowed
+ *   (informative)           background — allowed
+ *
+ * An unqualified path is treated as a dependency, because that is the reading
+ * that costs something if it is wrong in the other direction.
+ */
+const OUTSIDE_PATH = /(?:[A-Za-z]:[\\/][^\s`"'<>|]+|\\\\[^\s`"'<>|]+|(?:\.\.[\\/])+[^\s`"'<>|]+)/g;
+const REFERENCE_QUALIFIERS = /\((?:external dependency|historical reference|example|informative)\)/i;
+/**
+ * A URL is not a filesystem path, and must not be read as one.
+ *
+ * `https://example.com/a/b` contains two things this checker would otherwise
+ * claim: `s:` followed by `//` looks like a drive-qualified path to the Windows
+ * branch, and `/example.com/a/b` looks like a POSIX absolute path. Running
+ * against the real pilot produced exactly that — `s://external.example/...` reported
+ * as a path the recipient cannot open, which is both wrong and the kind of wrong
+ * that makes a reader stop trusting the rest of the list.
+ *
+ * URLs are removed before anything is matched. A document that depends on
+ * something reachable over the network has a different problem from one that
+ * depends on a file only this machine has, and this check is about the second.
+ */
+const URL_IN_TEXT = /[a-z][a-z0-9+.-]*:\/\/[^\s`"'<>|)\]]+/gi;
+
+const TRANSIENT_LOCATION = /(?:[\\/]tmp[\\/]|%TEMP%|AppData[\\/]Local[\\/]Temp|scratchpad|[\\/]var[\\/]folders[\\/])/i;
+
+interface OutsideReference {
+  document: string;
+  line: number;
+  text: string;
+  qualified: boolean;
+  transient: boolean;
+}
+
+/**
+ * A POSIX absolute path, and the reason it is not looked for everywhere.
+ *
+ * `C:\...`, a UNC share and a `..` climb are unmistakable: nothing in ordinary
+ * English prose looks like one, so they can be recognised wherever they appear.
+ * `/opt/project/lib` is different. English is full of things that a permissive
+ * pattern reads as a path — a route in a sentence, a fraction, an option written
+ * `--flag/--other`, a date — and a check that flags those is a check somebody
+ * turns off, which costs more than the paths it would have caught.
+ *
+ * So a POSIX absolute path is recognised only in **structured positions**, where
+ * something has already declared that what follows is a location:
+ *
+ *   - a Markdown link or image target, `[…](/opt/project/lib)`
+ *   - a Markdown reference definition, `[id]: /opt/project/lib`
+ *   - a line that qualifies its reference — `(external dependency)` and the rest
+ *     — because the qualifier is itself the declaration that this is a location
+ *   - a field of the ledger that holds a path
+ *
+ * Two segments minimum, so `/` and `/usr` alone are not paths. Trailing
+ * punctuation is trimmed, because a path at the end of a sentence keeps the full
+ * stop otherwise.
+ */
+const POSIX_ABSOLUTE = /\/(?:[A-Za-z0-9._@+-]+)(?:\/[A-Za-z0-9._@+-]+)+\/?/g;
+
+/** A Markdown construct whose payload is a location and not prose. */
+const MARKDOWN_TARGET = /!?\[[^\]\n]*\]\(\s*<?([^)\s>]+)>?[^)]*\)/g;
+const MARKDOWN_REFERENCE = /^\s{0,3}\[[^\]\n]+\]:\s*<?([^\s>]+)>?/;
+
+/** Trailing sentence punctuation is not part of a path. */
+const trimTail = (value: string) => value.replace(/[.,;:!?)\]}"'`]+$/, "");
+
+function posixInStructuredPositions(line: string): string[] {
+  const found: string[] = [];
+  const take = (candidate: string) => {
+    const cleaned = trimTail(candidate.trim());
+    if (POSIX_ABSOLUTE.test(cleaned) && cleaned.startsWith("/")) found.push(cleaned);
+    POSIX_ABSOLUTE.lastIndex = 0;
+  };
+
+  for (const match of line.matchAll(MARKDOWN_TARGET)) take(match[1]);
+  const reference = MARKDOWN_REFERENCE.exec(line);
+  if (reference) take(reference[1]);
+  // A qualified line has already said that it is naming something outside; the
+  // qualifier is the structure. It is reported as a declaration, not blocked.
+  if (REFERENCE_QUALIFIERS.test(line)) {
+    for (const match of line.match(POSIX_ABSOLUTE) ?? []) take(match);
+  }
+  return [...new Set(found)];
+}
+
+/**
+ * Paths the ledger itself records, which are structured by definition.
+ *
+ * Every one of these is written through `recordedSourceFile` by this engine and
+ * cannot be absolute any more. A project written by an earlier engine can hold
+ * one, and that is precisely the case worth reporting: it is a record nobody can
+ * resolve, and it is in the ledger rather than in prose, so there is no prose to
+ * be careful about.
+ */
+function ledgerPathFields(state: State): Array<{ where: string; value: string }> {
+  const found: Array<{ where: string; value: string }> = [];
+  const add = (where: string, value: unknown) => {
+    if (nonEmpty(value)) found.push({ where, value: String(value) });
+  };
+  for (const item of state.human_overrides ?? []) {
+    add(`override ${item.id}.source`, (item as any).source);
+    add(`override ${item.id}.reconciliation_evidence`, (item as any).reconciliation_evidence);
+    for (const previous of (item as any).source_history ?? []) {
+      add(`override ${item.id}.source_history`, previous?.path);
+    }
+  }
+  for (const item of state.gates ?? []) add(`gate ${item.name || item.id}.evidence`, (item as any).evidence);
+  for (const item of state.modules ?? []) add(`module ${item.id}.evidence`, item.evidence);
+  for (const item of state.evidence ?? []) {
+    add(`evidence ${(item as any)?.id ?? "?"}.path`, typeof item === "string" ? item : (item as any)?.path);
+  }
+  for (const item of state.artifacts ?? []) {
+    add(`artifact ${item.id}.base_path`, item.base_path);
+    add(`artifact ${item.id}.working_path`, item.working_path);
+  }
+  for (const item of state.interview_log ?? []) {
+    add(`${(item as any).id}.reconstructed_from`, (item as any).reconstructed_from);
+    for (const document of (item as any).documents ?? []) add(`${(item as any).id}.documents`, document);
+  }
+  return found;
+}
+
+function outsideReferences(root: string, state: State): OutsideReference[] {
+  const found: OutsideReference[] = [];
+
+  // 1. The ledger's own path fields. Structured, so every spelling counts.
+  for (const { where, value } of ledgerPathFields(state)) {
+    const cleaned = value.replace(URL_IN_TEXT, "");
+    const unportable =
+      OUTSIDE_PATH.test(cleaned) || (cleaned.startsWith("/") && POSIX_ABSOLUTE.test(cleaned));
+    OUTSIDE_PATH.lastIndex = 0;
+    POSIX_ABSOLUTE.lastIndex = 0;
+    if (!unportable) continue;
+    found.push({
+      document: `${STATE_DIR}/state.json`,
+      line: 0,
+      text: `${where} = ${value}`,
+      qualified: false,
+      transient: TRANSIENT_LOCATION.test(value),
+    });
+  }
+
+  // 2. The governed documents.
+  const documents = new Set<string>();
+  for (const artifact of state.artifacts ?? []) {
+    for (const value of [artifact.working_path, artifact.base_path]) {
+      if (nonEmpty(value)) documents.add(canonicalRelative(String(value)));
+    }
+  }
+  for (const relative of [...documents].sort()) {
+    const absolute = existingFileInside(root, relative);
+    if (!absolute) continue;
+    const lines = fs.readFileSync(absolute, "utf8").split(/\r?\n/);
+    lines.forEach((raw, index) => {
+      const qualified = REFERENCE_QUALIFIERS.test(raw);
+      // Blank out any URL, keeping the line's length so nothing else shifts.
+      const line = raw.replace(URL_IN_TEXT, (match) => " ".repeat(match.length));
+      const candidates = [...(line.match(OUTSIDE_PATH) ?? []), ...posixInStructuredPositions(line)];
+      for (const match of [...new Set(candidates)]) {
+        found.push({
+          document: relative,
+          line: index + 1,
+          text: match,
+          qualified,
+          transient: TRANSIENT_LOCATION.test(match),
+        });
+      }
+    });
+  }
+  return found;
+}
+
+/**
+ * Is this folder enough for somebody who was not in the conversation?
+ *
+ * Deliberately a separate command from `validate`. They answer two different
+ * questions and conflating them would weaken both: `validate` asks whether the
+ * record is sound, and a project mid-interview is entitled to be sound and
+ * nowhere near deliverable. This asks whether the folder could be handed over
+ * today, which is only ever a question at the end.
+ *
+ * Blocking and advisory are kept apart for the same reason. An unresolvable
+ * dependency is blocking: the recipient cannot do the work. An empty requirements
+ * ledger on a project still interviewing is a fact, not a fault.
+ */
+function handoffCheck(flags: Flags): void {
+  const root = resolveProject(required(flags, "project-root"));
+  const { state } = loadState(root);
+  const blocking: string[] = [];
+  const advisory: string[] = [];
+
+  // 1. The record itself has to hold before anything else is worth saying.
+  blocking.push(...stateErrors(root, state));
+  blocking.push(...documentIntegrityErrors(root, state));
+  blocking.push(...recordedDigestErrors(root, state));
+
+  // 2. References out of the folder.
+  for (const reference of outsideReferences(root, state)) {
+    // A ledger field has no line number, and printing `:0` would invent one.
+    const where = reference.line ? `${reference.document}:${reference.line}` : reference.document;
+    if (reference.transient && !reference.qualified) {
+      blocking.push(`${where} points at a temporary location: ${reference.text}. It will not exist on the recipient's machine, and may not exist here tomorrow.`);
+    } else if (!reference.qualified) {
+      blocking.push(
+        `${where} points outside the project: ${reference.text}. The recipient cannot open it. ` +
+        `Bring it into the folder, summarise it in place with its reasoning, or mark the line "(external dependency)" to declare it needed and deliberately not delivered.`
+      );
+    } else {
+      advisory.push(`${where} refers to ${reference.text}, qualified on the line. It travels as a declaration, not as content.`);
+    }
+  }
+
+  // 3. Modules: nothing may be simply unexamined.
+  const progress = moduleProgress(state);
+  if (progress.untouched.length) {
+    blocking.push(
+      `module${progress.untouched.length === 1 ? "" : "s"} ${progress.untouched.join(", ")} ${progress.untouched.length === 1 ? "is" : "are"} NOT STARTED. ` +
+      `A module nobody examined is not the same as one that does not apply: confirm it, or record it NOT APPLICABLE with the reason.`
+    );
+  }
+  if (progress.inProgress.length) {
+    advisory.push(`module${progress.inProgress.length === 1 ? "" : "s"} ${progress.inProgress.join(", ")} ${progress.inProgress.length === 1 ? "is" : "are"} in progress and not confirmed.`);
+  }
+
+  // 4. The minimum a recipient needs in order to act.
+  if (!state.requirements.length) blocking.push(`no requirements are recorded, so nothing states what the result has to do.`);
+  if (!state.decisions.length) blocking.push(`no decisions are recorded, so nothing states what was chosen or why.`);
+  if (!state.tasks.length) blocking.push(`no tasks are recorded, so nothing states what to do first.`);
+  const assurance = blockerAssurance(state);
+  if (assurance.blockers_assurance === "UNKNOWN") {
+    advisory.push(`no blocker was ever recorded and nobody recorded finding none: plangonaut blocker-verify-none is how that absence is stated.`);
+  }
+  if (!state.risks.length) advisory.push(`no risks are recorded.`);
+
+  // 5. An interaction left open is an instruction the recipient cannot finish.
+  const open = openInterviewEntries(state);
+  if (open.unapplied.length) blocking.push(`${open.unapplied[0].id} has an answer that was never applied; what it changed is not in the record.`);
+  if (state.needs_reconciliation) blocking.push(`an override is open and unreconciled; the project's current direction is not settled.`);
+
+  // 6. A document superseded with nowhere to go next.
+  for (const artifact of state.artifacts ?? []) {
+    if (String(artifact.status).toUpperCase() !== "SUPERSEDED") continue;
+    if (!(artifact.provenance ?? []).length) {
+      blocking.push(`artifact ${artifact.id} is SUPERSEDED and names nothing that replaced it, so a reader finds a document declared out of date and no way to the current one.`);
+    }
+  }
+
+  // 7. Documents outside the ledger.
+  const unclaimed = unclaimedDocumentReport(root, state);
+  advisory.push(...unclaimed.findings);
+  advisory.push(...imbalanceLines(progress));
+
+  if (flags.json === true) {
+    console.log(JSON.stringify({ deliverable: blocking.length === 0, blocking, advisory }, null, 2));
+    if (blocking.length) reportedExitCode = 2;
+    return;
+  }
+  if (blocking.length) {
+    console.log(`This folder is not ready to hand off. ${blocking.length} thing${blocking.length === 1 ? "" : "s"} would stop somebody who was not in the conversation:`);
+    for (const line of blocking) console.log(`- ${line}`);
+  } else {
+    console.log(`This folder can be handed off: nothing it depends on is unreachable, and the record is complete enough to act on.`);
+  }
+  if (advisory.length) {
+    console.log(`\nWorth knowing, not blocking:`);
+    for (const line of advisory) console.log(`- ${line}`);
+  }
+  console.log(`\nIntegrity and sufficiency are different questions. plangonaut validate and project-verify answer the first; this answers the second.`);
+  if (blocking.length) throw new PlangonautError(`Handoff check failed: ${blocking.length} blocking finding${blocking.length === 1 ? "" : "s"}.`, "PROJECT_STATE_UNTRUSTED");
+}
+
+/**
+ * Declare a file governed or deliberately not.
+ *
+ * `document_governance` lives in `state.json`, which is replayed and digested,
+ * so it cannot be hand-edited: changing it in a text editor puts the state out
+ * of step with its own history and `validate` refuses the project — punishing
+ * somebody for doing the thing the warning asked them to do. That is not a
+ * reason to move the list somewhere unverified. It is a reason to give it a
+ * command, which is what every other deliberate decision in this product has.
+ *
+ * `--exclude` records that a file is intentionally outside the ledger, with the
+ * reason, in an event. `--include` withdraws the exclusion. Neither writes or
+ * moves the file itself.
+ */
+function govern(flags: Flags): void {
+  const root = resolveProject(required(flags, "project-root"));
+  const key = idempotencyKey(flags);
+  if (checkIdempotency(root, key)) return console.log(`Idempotent retry: governance already recorded.`);
+  const { location, state } = loadState(root);
+  const owner = required(flags, "owner").trim();
+  assertKnownOwner(state, owner);
+
+  const excluding = nonEmpty(flags.exclude);
+  const including = nonEmpty(flags.include);
+  if (excluding === including) {
+    throw new PlangonautError(`Pass exactly one of --exclude <path> or --include <path>. Nothing was written.`);
+  }
+  const target = canonicalRelative(String(excluding ? flags.exclude : flags.include));
+  const refusal = artifactPathRefusal("A governed path", target);
+  if (refusal) throw new PlangonautError(`${refusal}\nNothing was written.`);
+
+  const current = (state as any).document_governance ?? {
+    directories: [...DEFAULT_GOVERNED_DIRECTORIES],
+    exclusions: [],
+    // An older project never recorded what was already in the folder, and this
+    // command must not invent it: `null` keeps meaning "unknown", which is what
+    // `unclaimedDocuments` reads it as.
+    preexisting: null,
+  };
+  const exclusions: string[] = [...(current.exclusions ?? [])];
+  const at = now();
+
+  if (excluding) {
+    const reason = required(flags, "reason").trim();
+    if (!reason) throw new PlangonautError(`--reason cannot be empty: an exclusion nobody explained is indistinguishable from a file that was forgotten. Nothing was written.`);
+    if (exclusions.includes(target)) throw new PlangonautError(`${target} is already excluded. Nothing was written.`);
+    exclusions.push(target);
+    exclusions.sort();
+  } else {
+    const index = exclusions.indexOf(target);
+    if (index < 0) throw new PlangonautError(`${target} is not excluded. Nothing was written.`);
+    exclusions.splice(index, 1);
+  }
+
+  (state as any).document_governance = { ...current, exclusions };
+  state.updated_at = at;
+  const revision = state.revision + 1;
+  const eventId = crypto.randomUUID();
+  state.revision = revision;
+  state.last_event_id = eventId;
+  const event = {
+    event_id: eventId,
+    type: excluding ? "DOCUMENT_GOVERNANCE_EXCLUDED" : "DOCUMENT_GOVERNANCE_INCLUDED",
+    state_revision: revision, at, idempotency_key: key, path: target, owner,
+    reason: excluding ? String(flags.reason).trim() : null,
+  };
+  commitState(root, location, state, event);
+  console.log(
+    excluding
+      ? `${target} is recorded as deliberately outside the ledger. validate will not report it again; the reason is in event ${eventId}.`
+      : `${target} is governed again, and validate will report it if no artifact claims it.`
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Which engine is running, and which one this project was written by
+// ---------------------------------------------------------------------------
+
+/**
+ * The versions in play, kept apart because they are four different facts.
+ *
+ * A real pilot was attributed to the wrong release for want of this. The engine
+ * on the PATH was `0.3.0-alpha.3`, the project's state recorded `0.3.0-alpha.3`,
+ * and the review of that session was filed under `alpha4` — because `status`
+ * printed neither number, `beave_version` was read as "the project's version"
+ * when it means "what created it", and nothing said which engine was doing the
+ * work. Every one of those is individually forgivable; together they made it
+ * impossible to answer *which Plangonaut was this* without reading the state file
+ * by hand.
+ *
+ *   running    the CLI executing right now
+ *   created    what wrote the project's first state, or last migrated it
+ *   last_wrote what most recently committed to it, which is not the same thing
+ *   schema     the shape of the state, which is what compatibility turns on
+ *
+ * `last_wrote` is absent on a project written before this release, and says so
+ * rather than guessing: a missing field means the information was never
+ * recorded, which is different from the engine never having changed.
+ *
+ * **Nothing here reaches the network.** The running version comes from this
+ * package's own `VERSION`, and the rest from the project on disk. There is no
+ * registry lookup, no "is a newer one available", and there will not be: that
+ * question has nothing to do with whether this project can be opened.
+ */
+interface VersionProvenance {
+  running: string;
+  created: string | null;
+  last_wrote: string | null;
+  schema: number | null;
+  schema_expected: number;
+  compatibility: "SAME" | "CLI_NEWER" | "PROJECT_NEWER" | "UNKNOWN";
+  migration_required: boolean;
+  note: string;
+}
+
+/**
+ * Compare two version strings far enough to order two releases of this product.
+ *
+ * Deliberately not a full SemVer implementation: it compares the numeric parts
+ * and then the prerelease text, which orders `0.3.0-alpha.3` before
+ * `0.3.0-alpha.4` and `0.3.0-alpha.9` before `0.3.0-alpha.10`. Anything it
+ * cannot order returns `null`, and the caller reports `UNKNOWN` rather than
+ * inventing a direction — a wrong answer here would tell somebody to migrate a
+ * project that does not need it.
+ */
+function compareVersions(left: string, right: string): number | null {
+  const parse = (value: string) => {
+    const match = /^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/.exec(value.trim());
+    if (!match) return null;
+    return {
+      numbers: [Number(match[1]), Number(match[2]), Number(match[3])],
+      pre: match[4] ?? null,
+    };
+  };
+  const a = parse(left);
+  const b = parse(right);
+  if (!a || !b) return null;
+  for (let index = 0; index < 3; index += 1) {
+    if (a.numbers[index] !== b.numbers[index]) return a.numbers[index] < b.numbers[index] ? -1 : 1;
+  }
+  // A release is always later than its own prereleases.
+  if (a.pre === null && b.pre === null) return 0;
+  if (a.pre === null) return 1;
+  if (b.pre === null) return -1;
+  if (a.pre === b.pre) return 0;
+  const segments = (value: string) => value.split(".").map((part) => (/^\d+$/.test(part) ? Number(part) : part));
+  const left_ = segments(a.pre);
+  const right_ = segments(b.pre);
+  for (let index = 0; index < Math.max(left_.length, right_.length); index += 1) {
+    const one = left_[index];
+    const two = right_[index];
+    if (one === undefined) return -1;
+    if (two === undefined) return 1;
+    if (one === two) continue;
+    if (typeof one === "number" && typeof two === "number") return one < two ? -1 : 1;
+    if (typeof one === "number") return -1;
+    if (typeof two === "number") return 1;
+    return String(one) < String(two) ? -1 : 1;
+  }
+  return 0;
+}
+
+function versionProvenance(state: State): VersionProvenance {
+  const created = nonEmpty((state as any).beave_version) ? String((state as any).beave_version) : null;
+  const lastWrote = nonEmpty((state as any).last_engine_version)
+    ? String((state as any).last_engine_version)
+    : null;
+  const schema = typeof state.schema_version === "number" ? state.schema_version : null;
+
+  // The project's own claim is the most recent engine that touched it, and the
+  // creating engine only when nothing else was recorded.
+  const projectVersion = lastWrote ?? created;
+  const order = projectVersion ? compareVersions(VERSION, projectVersion) : null;
+  const compatibility: VersionProvenance["compatibility"] =
+    projectVersion === null || order === null
+      ? "UNKNOWN"
+      : order === 0
+        ? "SAME"
+        : order > 0
+          ? "CLI_NEWER"
+          : "PROJECT_NEWER";
+
+  const migrationRequired = schema !== null && schema !== SCHEMA_VERSION;
+
+  let note: string;
+  if (migrationRequired) {
+    note =
+      `This project's state is schema ${schema} and this engine writes schema ${SCHEMA_VERSION}. ` +
+      `Run plangonaut migrate --project-root . before working on it.`;
+  } else if (compatibility === "SAME") {
+    note = `The running CLI and the engine that last wrote this project are the same version.`;
+  } else if (compatibility === "CLI_NEWER") {
+    note =
+      `This project was last written by ${projectVersion} and you are running ${VERSION}. ` +
+      `The schema is the same, so nothing needs migrating and nothing has been changed. ` +
+      `What it means is that any observation about this project belongs to ${projectVersion} ` +
+      `unless you work on it further — attributing it to ${VERSION} would be attributing it to an engine that never ran here.`;
+  } else if (compatibility === "PROJECT_NEWER") {
+    note =
+      `This project was last written by ${projectVersion} and you are running ${VERSION}, which is older. ` +
+      `The schema is the same, so it can be read — but a newer engine may have recorded things this one does not know about, ` +
+      `and nothing here will tell you which. Use the newer CLI if you have it.`;
+  } else {
+    note =
+      projectVersion === null
+        ? `This project records no engine version. It was written before that was kept, so which engine produced it cannot be established from the folder.`
+        : `This project records ${projectVersion}, which cannot be ordered against ${VERSION}. No comparison is claimed.`;
+  }
+
+  return {
+    running: VERSION,
+    created,
+    last_wrote: lastWrote,
+    schema,
+    schema_expected: SCHEMA_VERSION,
+    compatibility,
+    migration_required: migrationRequired,
+    note,
+  };
+}
+
+/** The same thing as lines, for `resume` and the context pack. */
+function provenanceLines(state: State): string[] {
+  const provenance = versionProvenance(state);
+  const lines = [
+    `- CLI running now: ${provenance.running}`,
+    `- Project created by: ${provenance.created ?? "not recorded"}`,
+    `- Project last written by: ${provenance.last_wrote ?? "not recorded (predates this field)"}`,
+    `- State schema: ${provenance.schema ?? "not recorded"} (this engine writes ${provenance.schema_expected})`,
+  ];
+  if (provenance.compatibility !== "SAME" || provenance.migration_required) {
+    lines.push(`- ${provenance.migration_required ? "MIGRATION REQUIRED" : "VERSION MISMATCH"}: ${provenance.note}`);
+  }
+  return lines;
+}
+
+/** Where a Genesis project is expected to put the documents Plangonaut writes. */
+const DEFAULT_GOVERNED_DIRECTORIES = ["docs"];
+
+/** Documentation that belongs to the repository rather than to the plan. */
+const UNGOVERNED_BASENAMES = new Set([
+  "readme", "changelog", "changes", "history", "license", "licence", "notice",
+  "contributing", "code_of_conduct", "code-of-conduct", "security", "support",
+  "authors", "maintainers", "governance", "roadmap", "install", "upgrading",
+  "agents", "claude", "gemini", "copilot-instructions", "cursorrules",
+]);
+
+/** Directories whose Markdown is somebody else's: dependencies, builds, caches. */
+const UNSCANNED_DIRECTORIES = new Set([
+  "node_modules", "vendor", "bower_components", "dist", "build", "out", "target",
+  "coverage", "tmp", "temp", "__pycache__", ".venv", "venv", "site-packages",
+]);
+
+const VERSIONED_DOCUMENT = /-v\d+\.md$/i;
+
+interface DocumentGovernance {
+  directories: string[];
+  exclusions: string[];
+  /** Markdown present when the project was initialised. Absent on old projects. */
+  preexisting: string[] | null;
+}
+
+function documentGovernance(state: State): DocumentGovernance {
+  const recorded = (state as any).document_governance;
+  const directories = Array.isArray(recorded?.directories) && recorded.directories.length
+    ? recorded.directories.map((entry: unknown) => canonicalRelative(String(entry)).replace(/\/+$/, ""))
+    : DEFAULT_GOVERNED_DIRECTORIES;
+  const exclusions = Array.isArray(recorded?.exclusions)
+    ? recorded.exclusions.map((entry: unknown) => canonicalRelative(String(entry)))
+    : [];
+  const preexisting = Array.isArray(recorded?.preexisting)
+    ? recorded.preexisting.map((entry: unknown) => canonicalRelative(String(entry)))
+    : null;
+  return { directories, exclusions, preexisting };
+}
+
+/**
+ * Every Markdown file in the project, as paths relative to the root.
+ *
+ * Bounded on purpose: it skips the ledger, dependency and build directories, and
+ * anything starting with a dot. A project big enough for this to be slow is a
+ * project where walking `node_modules` would have been the slow part.
+ */
+function markdownFiles(root: string): string[] {
+  const found: string[] = [];
+  const walk = (directory: string, prefix: string, depth: number): void => {
+    if (depth > 12) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const name = entry.name;
+      if (name.startsWith(".")) continue;
+      const relative = prefix ? `${prefix}/${name}` : name;
+      if (entry.isDirectory()) {
+        if (UNSCANNED_DIRECTORIES.has(name.toLowerCase()) || isReservedTop(name)) continue;
+        walk(path.join(directory, name), relative, depth + 1);
+      } else if (entry.isFile() && name.toLowerCase().endsWith(".md")) {
+        found.push(relative);
+      }
+    }
+  };
+  walk(root, "", 0);
+  return found.sort();
+}
+
+/** True when a recorded exclusion covers this path, exactly or as a subtree. */
+function excludedFromGovernance(relative: string, exclusions: string[]): boolean {
+  return exclusions.some((pattern) => {
+    if (!pattern) return false;
+    if (pattern.endsWith("/**")) return relative.startsWith(pattern.slice(0, -2));
+    if (pattern.endsWith("/")) return relative.startsWith(pattern);
+    return relative === pattern;
+  });
+}
+
+interface UnclaimedDocument {
+  path: string;
+  tier: "versioned" | "governed-directory";
+}
+
+/**
+ * Markdown the project looks like it should be governing, and is not.
+ *
+ * Claimed means an artifact names it, in either of the two paths an artifact
+ * carries: the working `-vN` file and the finalized base file. The interview
+ * view is claimed by being the interview view.
+ */
+function unclaimedDocuments(root: string, state: State): UnclaimedDocument[] {
+  const governance = documentGovernance(state);
+  const claimed = new Set<string>();
+  for (const artifact of state.artifacts ?? []) {
+    for (const value of [artifact.working_path, artifact.base_path]) {
+      if (nonEmpty(value)) claimed.add(canonicalRelative(String(value)));
+    }
+  }
+  const view = (state as any).interview_view?.path;
+  if (nonEmpty(view)) claimed.add(canonicalRelative(String(view)));
+  /*
+   * A document is claimed by any record that carries its digest, not only by an
+   * artifact.
+   *
+   * Found on the pilot fixture: an override's instruction file and a
+   * reconciliation's evidence, both recorded with a digest that `validate`
+   * re-verifies on every run, were reported as documents nobody was governing.
+   * They are among the most governed files in the project. Reporting them makes
+   * the warning wrong in exactly the way that teaches a reader to skip it.
+   */
+  for (const item of state.human_overrides ?? []) {
+    for (const value of [(item as any).source, (item as any).reconciliation_evidence]) {
+      if (nonEmpty(value)) claimed.add(canonicalRelative(String(value)));
+    }
+    for (const previous of (item as any).source_history ?? []) {
+      if (nonEmpty(previous?.path)) claimed.add(canonicalRelative(String(previous.path)));
+    }
+  }
+  for (const item of state.gates ?? []) {
+    if (nonEmpty((item as any).evidence)) claimed.add(canonicalRelative(String((item as any).evidence)));
+  }
+  for (const item of state.modules ?? []) {
+    if (nonEmpty(item.evidence)) claimed.add(canonicalRelative(String(item.evidence)));
+  }
+  for (const item of state.evidence ?? []) {
+    const value = typeof item === "string" ? item : (item as any)?.path;
+    if (nonEmpty(value)) claimed.add(canonicalRelative(String(value)));
+  }
+  for (const item of state.blockers ?? []) {
+    for (const value of [(item as any)?.evidence, (item as any)?.resolution_evidence]) {
+      if (nonEmpty(value)) claimed.add(canonicalRelative(String(value)));
+    }
+  }
+
+  const preexisting = new Set(governance.preexisting ?? []);
+  const inGoverned = (relative: string) =>
+    governance.directories.some((directory) => directory && relative.startsWith(`${directory}/`));
+
+  const found: UnclaimedDocument[] = [];
+  for (const relative of markdownFiles(root)) {
+    if (claimed.has(relative)) continue;
+    if (excludedFromGovernance(relative, governance.exclusions)) continue;
+    const basename = path.basename(relative).replace(/\.md$/i, "").toLowerCase();
+    if (UNGOVERNED_BASENAMES.has(basename)) continue;
+    if (VERSIONED_DOCUMENT.test(relative)) {
+      found.push({ path: relative, tier: "versioned" });
+      continue;
+    }
+    // The second tier needs a record of what was already there. Without one it
+    // would report a project's existing documentation as an agent's mistake.
+    if (governance.preexisting === null) continue;
+    if (preexisting.has(relative)) continue;
+    if (inGoverned(relative)) found.push({ path: relative, tier: "governed-directory" });
+  }
+  return found;
+}
+
+/**
+ * The report: the findings, and separately the instructions for acting on them.
+ *
+ * Two lists rather than one, because the caller renders findings as a bulleted
+ * refusal and instructions are not findings. Bulleted together, the count of
+ * problems silently included the paragraph explaining how to fix them.
+ */
+function unclaimedDocumentReport(root: string, state: State): { findings: string[]; remedy: string[] } {
+  const found = unclaimedDocuments(root, state);
+  if (!found.length) return { findings: [], remedy: [] };
+  const findings = found.map((entry) =>
+    entry.tier === "versioned"
+      ? `${entry.path} carries a -vN working-file name and no artifact claims it, so it has no digest and can be changed without anything noticing.`
+      : `${entry.path} is a Markdown file inside a governed directory, written after this project was initialised, and no artifact claims it.`
+  );
+  const first = found[0].path;
+  const base = first.replace(/-v\d+\.md$/i, ".md");
+  return {
+    findings,
+    remedy: [
+      `Regularise each one by recording it. Two commands: the first shows what would be written and returns a confirmation_token, the second writes it.`,
+      `  plangonaut doc-diff --project-root . --id ART-<NAME> --base-path ${base} --content-file ${first} --owner <owner>`,
+      `  plangonaut doc-save --project-root . --id ART-<NAME> --base-path ${base} --content-file ${first} --owner <owner> --confirm-token <confirmation_token from doc-diff> --operation-id <id>`,
+      `A file that is deliberately not governed is declared, not ignored: plangonaut govern --project-root . --exclude <path> --reason "<why>" --owner <owner> --operation-id <id>.`,
+    ],
+  };
+}
+
 function validateRoot(root: string, includeDocuments = false): State {
   const { state } = loadState(root);
   const errors = stateErrors(root, state);
@@ -4578,7 +5759,7 @@ function status(flags: Flags): void {
    * the machine output should not have to know the mapping.
    */
   const where = locateState(root);
-  console.log(JSON.stringify({ project: state.project.name, state_format: where.format, state_directory: where.name, project_mode: state.project.mode, interaction_mode: state.interaction_mode, lifecycle_state: state.lifecycle_state, current_gate: state.current_gate, coverage: `${state.modules.filter((item) => new Set(["CONFIRMED", "DEFERRED", "NOT APPLICABLE"]).has(item.status)).length}/${state.modules.length}`, active_module: active && { id: active.id, title: active.title, status: active.status }, needs_reconciliation: state.needs_reconciliation, open_overrides: state.human_overrides.filter((item) => item.status === "OPEN").length, ...blockerAssurance(state), progress_forecast: statusForecast(state), exact_next_action: state.exact_next_action, updated_at: state.updated_at }, null, 2));
+  console.log(JSON.stringify({ project: state.project.name, versions: versionProvenance(state), state_format: where.format, state_directory: where.name, project_mode: state.project.mode, interaction_mode: state.interaction_mode, lifecycle_state: state.lifecycle_state, current_gate: state.current_gate, coverage: `${state.modules.filter((item) => new Set(["CONFIRMED", "DEFERRED", "NOT APPLICABLE"]).has(item.status)).length}/${state.modules.length}`, active_module: active && { id: active.id, title: active.title, status: active.status }, needs_reconciliation: state.needs_reconciliation, open_overrides: state.human_overrides.filter((item) => item.status === "OPEN").length, ...blockerAssurance(state), module_progress: moduleProgressJson(state), progress_forecast: statusForecast(state), standing_notices: noticeSummary(root), exact_next_action: state.exact_next_action, updated_at: state.updated_at }, null, 2));
 }
 
 /**
@@ -4611,6 +5792,184 @@ function statusForecast(state: State): Record<string, unknown> {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Where the interview has been, and where it has not
+// ---------------------------------------------------------------------------
+
+/**
+ * Which modules have to be underway before another module's answers can be
+ * trusted.
+ *
+ * This is a claim about the subject matter, so it is written down rather than
+ * inferred, and it is deliberately short: only the dependencies strong enough
+ * that answering downstream first produces work that may have to be thrown away.
+ *
+ * The pilot is the worked example. A complete architecture for a registry and a
+ * detection system was designed — schema, per-function detail, the lot — while
+ * module 10, *technology and development environment*, had never been opened. The
+ * language the thing would be written in was undecided, and parts of that
+ * architecture depend on it: how the credential store is addressed depends on how
+ * the chosen language talks to DPAPI. Every command in that session answered OK.
+ * Nothing anywhere related the depth reached to the ground it stood on.
+ *
+ * It does not block. It explains an ordering, and the ordering is reported
+ * beside the question so the agent can overrule it deliberately instead of not
+ * knowing about it.
+ */
+const MODULE_PREREQUISITES: Record<number, number[]> = {
+  // Nothing is decidable before it is known what the project is and who it is for.
+  3: [1],
+  4: [1, 2],
+  5: [2, 4],
+  6: [10],
+  7: [6, 10],
+  8: [4],
+  // Architecture rests on the type of project and the technology it is built with.
+  9: [3, 10],
+  11: [10],
+  12: [3, 10],
+  15: [4, 8],
+  16: [1, 2, 4, 9, 10],
+};
+
+/**
+ * The declared threshold for "this interview is digging, not covering".
+ *
+ * Stated as three numbers rather than a feeling, because an agent has to be able
+ * to predict when it will be told this, and a reader has to be able to disagree
+ * with the rule rather than with the engine's mood. The pilot sits well past all
+ * three: nine interactions, one module touched, fifteen never opened.
+ */
+const IMBALANCE_MIN_INTERACTIONS = 6;
+const IMBALANCE_MAX_MODULES_TOUCHED = 3;
+const IMBALANCE_MIN_UNTOUCHED = 10;
+
+interface ModuleProgress {
+  confirmed: number[];
+  inProgress: number[];
+  untouched: number[];
+  /** `NOT STARTED` in the ledger, but carrying recorded interactions. */
+  formallyOpen: number[];
+  notApplicable: number[];
+  deferred: number[];
+  blocked: number[];
+  /** Modules with at least one recorded interview interaction. */
+  touched: number[];
+  interactions: Map<number, number>;
+  questions: { planned: number; asked: number; answered: number; settled: number; closed: number };
+  imbalance: { interactions: number; touched: number[]; untouched: number[] } | null;
+}
+
+function moduleProgress(state: State): ModuleProgress {
+  const buckets: ModuleProgress = {
+    confirmed: [], inProgress: [], untouched: [], formallyOpen: [], notApplicable: [], deferred: [], blocked: [],
+    touched: [], interactions: new Map(),
+    questions: { planned: 0, asked: 0, answered: 0, settled: 0, closed: 0 },
+    imbalance: null,
+  };
+  for (const module of state.modules ?? []) {
+    if (module.status === "CONFIRMED") buckets.confirmed.push(module.id);
+    else if (module.status === "NOT APPLICABLE") buckets.notApplicable.push(module.id);
+    else if (module.status === "DEFERRED") buckets.deferred.push(module.id);
+    else if (module.status === "BLOCKED") buckets.blocked.push(module.id);
+    else if (module.status === "NOT STARTED") buckets.untouched.push(module.id);
+    else buckets.inProgress.push(module.id);
+  }
+  for (const entry of interviewLog(state)) {
+    if (entry.status === "SUPERSEDED") continue;
+    if (typeof entry.module === "number") {
+      buckets.interactions.set(entry.module, (buckets.interactions.get(entry.module) ?? 0) + 1);
+    }
+    if (entry.status === "PLANNED") buckets.questions.planned += 1;
+    else if (entry.status === "ASKED") buckets.questions.asked += 1;
+    else if (entry.status === "ANSWERED") {
+      // There is no SETTLED status: settled is ANSWERED with the consequences
+      // recorded. Counting them as one number hid the difference the ledger
+      // exists to keep — an answer received is not an answer applied.
+      if (nonEmpty(entry.consequences_recorded_at)) buckets.questions.settled += 1;
+      else buckets.questions.answered += 1;
+    } else buckets.questions.closed += 1;
+  }
+  buckets.touched = [...buckets.interactions.keys()].sort((a, b) => a - b);
+
+  /*
+   * A module can be `NOT STARTED` in the ledger and worked on in fact.
+   *
+   * On a project written by an engine that did not move module status — which is
+   * every project written before `0.3.0-alpha.5` — nine recorded questions sit
+   * under a module that still reads `NOT STARTED`. Counting it as never opened
+   * produced two sentences that contradicted each other in the same paragraph:
+   * *"9 interactions, all on module 1"* and *"module 1 has never been opened"*.
+   * Found by running this against the real pilot.
+   *
+   * So "never opened" means the ledger says `NOT STARTED` **and** nothing was
+   * ever recorded against it. The rest are formally incomplete rather than
+   * untouched, which is a different thing and is reported as one.
+   */
+  buckets.formallyOpen = buckets.untouched.filter((id) => buckets.interactions.has(id));
+  buckets.untouched = buckets.untouched.filter((id) => !buckets.interactions.has(id));
+
+  const total = [...buckets.interactions.values()].reduce((sum, count) => sum + count, 0);
+  if (
+    total >= IMBALANCE_MIN_INTERACTIONS &&
+    buckets.touched.length <= IMBALANCE_MAX_MODULES_TOUCHED &&
+    buckets.untouched.length >= IMBALANCE_MIN_UNTOUCHED
+  ) {
+    buckets.imbalance = { interactions: total, touched: buckets.touched, untouched: buckets.untouched };
+  }
+  return buckets;
+}
+
+/**
+ * The same counts, for a consumer that cannot read a sentence.
+ *
+ * `coverage: "1/17"` stays where it is and means what it always meant — modules
+ * in a terminal status over all modules — but it is no longer the only thing a
+ * reader has. A fraction that counts confirmations says "almost nothing done"
+ * about a project that has done a great deal and confirmed none of it, which is
+ * the difference this object exists to carry.
+ */
+function moduleProgressJson(state: State): Record<string, unknown> {
+  const progress = moduleProgress(state);
+  return {
+    confirmed: progress.confirmed,
+    in_progress: progress.inProgress,
+    never_opened: progress.untouched,
+    formally_not_started_but_worked_on: progress.formallyOpen,
+    not_applicable: progress.notApplicable,
+    deferred: progress.deferred,
+    blocked: progress.blocked,
+    interactions_by_module: Object.fromEntries([...progress.interactions].sort((a, b) => a[0] - b[0])),
+    // Not `questions`: `status` already refuses to expose a `questions` object
+    // for a forecast nobody recorded, and these counts are interview entries by
+    // state, not a forecast range. Two different things must not share a name in
+    // the same document.
+    interview_questions: progress.questions,
+    coverage_imbalance: progress.imbalance
+      ? { ...progress.imbalance, threshold: { min_interactions: IMBALANCE_MIN_INTERACTIONS, max_modules_touched: IMBALANCE_MAX_MODULES_TOUCHED, min_untouched: IMBALANCE_MIN_UNTOUCHED } }
+      : null,
+  };
+}
+
+/** The imbalance, in words, with the choice left to whoever reads it. */
+function imbalanceLines(progress: ModuleProgress): string[] {
+  if (!progress.imbalance) return [];
+  const { interactions, touched, untouched } = progress.imbalance;
+  return [
+    `COVERAGE: ${interactions} recorded interaction${interactions === 1 ? "" : "s"}, all on module${touched.length === 1 ? "" : "s"} ${touched.join(", ")}, while ${untouched.length} module${untouched.length === 1 ? " has" : "s have"} never been opened: ${untouched.join(", ")}.`,
+    `Depth is not progress across the project. Going deeper here may be the right call — say so and record it — but it is a choice, and until it is made the blueprint rests on modules nobody has looked at.`,
+  ];
+}
+
+/** Prerequisite modules that are still untouched, for a module being worked on. */
+function missingPrerequisites(state: State, moduleId: number): number[] {
+  const required = MODULE_PREREQUISITES[moduleId] ?? [];
+  return required.filter((id) => {
+    const module = (state.modules ?? []).find((item) => item.id === id);
+    return !module || module.status === "NOT STARTED";
+  });
+}
+
 function nextQuestions(state: State, requestedCount?: string | boolean): string {
   const active = activeModule(state);
   if (!active) return "Questionnaire coverage complete. Next: approve the research/synthesis gate.\n";
@@ -4628,17 +5987,61 @@ function nextQuestions(state: State, requestedCount?: string | boolean): string 
    */
   const answered = new Map<string, string>();
   for (const item of interviewLog(state)) {
-    if (item.status === "ANSWERED" && nonEmpty(item.answer)) answered.set(item.question.trim(), item.id);
+    // Any recorded answer counts, settled or not, and a question closed as
+    // deferred or skipped counts too: all of them are decisions the history
+    // already holds, and re-proposing one asks the user to repeat themselves.
+    // This used to test `status === "ANSWERED"` alone, so an answer that had been
+    // applied — the normal end state — stopped matching the moment it was
+    // settled, and the question came back.
+    if (nonEmpty(item.answer) || QA_CLOSE_KINDS.has(String(item.status).toLowerCase())) {
+      answered.set(item.question.trim(), `${item.id} (${item.status.toLowerCase()})`);
+    }
   }
   const lines = catalog!.questions.slice(0, count).map((question: string, index: number) => {
     const recorded = answered.get(question.trim());
     return recorded
-      ? `${index + 1}. ${question}${NL}   Already recorded as answered in ${recorded}. Do not ask it again unless that answer was invalidated.`
+      ? `${index + 1}. ${question}${NL}   Already in the history as ${recorded}. Do not ask it again unless that answer was invalidated.`
       : `${index + 1}. ${question}`;
   });
-  return [`Module ${active.id} — ${active.title} [${active.status}]`, ...lines, "Stop after the user's answers; confirm them before recording the module outcome.", ""].join("\n");
+  const missing = missingPrerequisites(state, active.id);
+  const prerequisite = missing.length
+    ? [
+        `Before these: module${missing.length === 1 ? "" : "s"} ${missing.join(", ")} ${missing.length === 1 ? "has" : "have"} never been opened, and ${missing.length === 1 ? "it is" : "they are"} what module ${active.id} rests on.`,
+        `Answering here first is allowed and may be right; it means accepting that a later answer there can invalidate what is decided now.`,
+      ]
+    : [];
+  return [
+    `Module ${active.id} — ${active.title} [${active.status}]`,
+    ...prerequisite,
+    ...lines,
+    "Stop after the user's answers; confirm them before recording the module outcome.",
+    "",
+  ].join("\n");
 }
 
+/**
+ * What to do next, read from the ledger before the catalogue.
+ *
+ * `next` is the command made for saying where to go, and in the pilot it was the
+ * command that could not. It looked only at `modules[].status`; nothing writes
+ * that but `record --module`; nobody ran `record --module`; so after nine
+ * answered questions it kept offering module 1's first two catalogue questions,
+ * one of which the history already answered. The one command that could have
+ * corrected the interview's direction would not have corrected it if it had been
+ * run.
+ *
+ * The order is now: what is already open here, then what this module rests on,
+ * then the catalogue. Something in flight outranks something new, because an
+ * unfinished interaction is the most specific instruction the project holds —
+ * and a `PLANNED` question, written ahead by `qa-settle --next-id`, is exactly
+ * that: the last person to think about this project already decided what comes
+ * next, and proposing a catalogue question instead throws that decision away.
+ *
+ * It also reports the shape of the work rather than one fraction. `1/17` said
+ * "almost nothing done" about a session that had overturned the project's
+ * founding principle, because the fraction counts only confirmations and nothing
+ * had been confirmed.
+ */
 function next(flags: Flags): void {
   const root = resolveProject(required(flags, "project-root"));
   const state = validateRoot(root);
@@ -4647,7 +6050,98 @@ function next(flags: Flags): void {
     console.log(`BLOCKED: reconcile ${open?.id} before asking further questionnaire questions.`);
     return;
   }
-  console.log(nextQuestions(state, flags.count).trimEnd());
+
+  const progress = moduleProgress(state);
+  const open = openInterviewEntries(state);
+  const lines: string[] = [];
+
+  // 1. An answer received and not applied. Nothing else may start first: that is
+  //    already `qa-ask`'s refusal, and `next` should not propose what qa-ask
+  //    would refuse.
+  if (open.unapplied.length) {
+    const entry = open.unapplied[0];
+    lines.push(`FIRST: ${entry.id} has an answer that has not been applied.`);
+    lines.push(`  ${entry.question}`);
+    lines.push(`Why this before anything else: the ledger records what was asked and what came back, and nothing yet records what it changed. qa-ask refuses a new question while this is open.`);
+    lines.push(`  plangonaut qa-settle --project-root . --id ${entry.id} --interpretation "..." --reply-file <file> --owner <owner> --operation-id <id>`);
+  }
+  // 2. A question already put and waiting.
+  else if (open.asked.length) {
+    const entry = open.asked[0];
+    lines.push(`FIRST: ${entry.id} has been asked and is waiting for an answer.`);
+    lines.push(`  ${entry.question}`);
+    lines.push(`Why this before a new one: it is already in flight, and a second open question makes it ambiguous which one the next answer belongs to.`);
+    lines.push(`  plangonaut qa-answer --project-root . --id ${entry.id} --answer-file <file> --owner <owner> --operation-id <id>`);
+  }
+  // 3. A question somebody already decided should come next.
+  else if (open.planned.length) {
+    const entry = open.planned[0];
+    lines.push(`FIRST: ${entry.id} is PLANNED — it was written ahead of time as the next question and has not been put yet.`);
+    lines.push(`  ${entry.question}`);
+    if (nonEmpty(entry.rationale)) lines.push(`  Why it was planned: ${entry.rationale}`);
+    lines.push(`Why this before the catalogue: the catalogue does not know what this project just learned. Somebody did, and wrote it down.`);
+    lines.push(`Ask it, then: plangonaut qa-answer --project-root . --id ${entry.id} --answer-file <file> --owner <owner> --operation-id <id>`);
+  }
+  // 4. Nothing open: the catalogue, for the module that is actually next.
+  else {
+    lines.push(nextQuestions(state, flags.count).trimEnd());
+  }
+
+  const imbalance = imbalanceLines(progress);
+  if (imbalance.length) {
+    lines.push("", ...imbalance);
+    /*
+     * Saying the interview is unbalanced and then proposing the same module
+     * again is advice nobody can act on.
+     *
+     * Found by running three simulated rounds against this command: it reported
+     * nine interactions on one module and fifteen never opened, and then offered
+     * that module's opening two catalogue questions for the third time. Both
+     * halves were individually correct and together they told the reader to
+     * widen while handing them the narrow thing.
+     *
+     * So the widening is named. The module offered is the first never-opened one
+     * whose own prerequisites are not themselves unopened, because sending
+     * somebody to a module that rests on another unopened module moves the
+     * problem rather than solving it.
+     */
+    // Never propose widening to a module that already carries work: on a legacy
+    // project the active module is `NOT STARTED` with nine questions under it,
+    // and offering it as "the first module ready to be opened" is nonsense.
+    const candidates = progress.untouched.filter((id) => !progress.interactions.has(id));
+    const reachable = candidates.filter((id) => !missingPrerequisites(state, id).length);
+    const widen = reachable[0] ?? candidates[0];
+    if (widen !== undefined) {
+      const module = (state.modules ?? []).find((item) => item.id === widen);
+      lines.push(
+        ``,
+        `To widen instead, the first module that is ready to be opened is ${widen}${module ? ` — ${module.title}` : ""}${reachable.length ? "" : " (its own prerequisites are open too; nothing here is free of them)"}.`,
+        `A question recorded there while the interview is on module ${activeModule(state)?.id ?? "the current one"} needs --crosscutting --crosscutting-reason "<why>", which is how the ledger keeps a deliberate widening distinguishable from losing track of where you were.`,
+      );
+    }
+  }
+
+  // The shape of the work, never the single fraction.
+  const summary = [
+    ``,
+    `Modules: ${progress.confirmed.length} confirmed, ${progress.inProgress.length} in progress, ${progress.untouched.length} never opened, ${progress.notApplicable.length} not applicable${progress.deferred.length ? `, ${progress.deferred.length} deferred` : ""}${progress.blocked.length ? `, ${progress.blocked.length} blocked` : ""}.`,
+    ...(progress.formallyOpen.length
+      ? [`Module${progress.formallyOpen.length === 1 ? "" : "s"} ${progress.formallyOpen.join(", ")} read NOT STARTED and carry recorded work: written by an engine that did not move module status. Formally incomplete, not untouched.`]
+      : []),
+    `Questions: ${progress.questions.planned} planned, ${progress.questions.asked} asked, ${progress.questions.answered} answered and not applied, ${progress.questions.settled} settled, ${progress.questions.closed} closed without an answer.`,
+    `Ledger: ${state.requirements.length} requirements, ${state.decisions.length} decisions, ${state.risks.length} risks, ${state.tasks.length} tasks, ${openBlockers(state).length} open blockers, ${state.evidence.length} evidence records.`,
+    `Phase ${state.lifecycle_state}, gate ${state.current_gate}.`,
+  ];
+  const forecast = state.progress_forecast;
+  if (forecast) {
+    summary.push(
+      `Forecast: ${forecastRangeText(forecast.questions)} questions, ${forecastRangeText(forecast.cycles)} cycles, confidence ${forecast.confidence}, cycle state ${forecast.cycle_state} (recorded ${forecast.recorded_at}).`
+    );
+  } else {
+    summary.push(`Forecast: none recorded. plangonaut forecast is how a project says how much it thinks is left.`);
+  }
+  lines.push(...summary);
+  console.log(lines.join("\n"));
 }
 
 // ---------------------------------------------------------------------------
@@ -4704,6 +6198,64 @@ interface InterviewEntry {
   reconstructed_from?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// A module that has been worked on
+// ---------------------------------------------------------------------------
+
+/**
+ * The status this engine uses for "started, not finished".
+ *
+ * The pilot's report asks for `IN PROGRESS`, and the schema does not have it.
+ * `MODULE_STATUSES` is `NOT STARTED`, `IN DISCUSSION`, `CONFIRMED`, `PARTIAL`,
+ * `DEFERRED`, `NOT APPLICABLE`, `BLOCKED`, and writing a value outside that list
+ * would be refused by `stateErrors` on the same operation that wrote it — and,
+ * worse, would mean Studio's copy of the vocabulary and the schema disagree with
+ * the ledger. The word the schema already has for a module under discussion is
+ * `IN DISCUSSION`, and that is what the interview produces: discussion.
+ */
+const MODULE_IN_PROGRESS = "IN DISCUSSION";
+
+/**
+ * Mark a module as started, because something was recorded against it.
+ *
+ * `coverage: 1/17` was the pilot's most misleading number. Nine questions and
+ * answers were recorded against module 1, all of them visible in
+ * `QUESTION_ANSWER_HISTORY.md` under `Module: 1`, and module 1 said
+ * `NOT STARTED` — because the only command that has ever written
+ * `modules[].status` is `record --module N --status …`, and nobody ran it. That
+ * is not a conservative report, it is a false one, and it had a second effect:
+ * `next` decides what to propose from the module ledger, so it stayed pinned to
+ * module 1's catalogue questions and kept proposing questions already answered.
+ *
+ * What moves automatically is exactly one transition, `NOT STARTED` →
+ * `IN DISCUSSION`, and only ever forward. `CONFIRMED` is a judgement about
+ * whether the answers are good enough, `NOT APPLICABLE` is a judgement that the
+ * module does not apply, `DEFERRED` and `BLOCKED` are decisions — no automatism
+ * writes any of them, and none of them is overwritten by activity arriving
+ * afterwards. The engine may record that work happened; it may not record what
+ * the work means.
+ */
+function touchModule(state: State, moduleId: unknown, at: string): number | null {
+  if (typeof moduleId !== "number" || !Number.isInteger(moduleId)) return null;
+  const module = (state.modules ?? []).find((item) => item.id === moduleId);
+  if (!module || module.status !== "NOT STARTED") return null;
+  module.status = MODULE_IN_PROGRESS;
+  module.updated_at = at;
+  // `owner` and `evidence` stay as they are. An interview interaction is not an
+  // owner's sign-off and it is not an evidence file; filling either from an
+  // automatism would put an assertion in the ledger that nobody made.
+  return moduleId;
+}
+
+/** What to say when activity has just opened a module that said NOT STARTED. */
+function moduleStartedLine(moduleId: number, state: State): string {
+  const module = (state.modules ?? []).find((item) => item.id === moduleId);
+  return (
+    `Module ${moduleId}${module ? ` — ${module.title}` : ""} moved from NOT STARTED to ${MODULE_IN_PROGRESS}, because work was recorded against it. ` +
+    `Confirming it stays a decision: plangonaut record --module ${moduleId} --status CONFIRMED.`
+  );
 }
 
 /** A state that predates the ledger gets the empty one, in memory, on read. */
@@ -5064,7 +6616,7 @@ function stampInterviewView(state: any): string {
 }
 
 function writeInterviewView(root: string, rendered: string): void {
-  atomicWrite(path.join(root, QA_VIEW_RELATIVE), Buffer.from(rendered, "utf8"));
+  atomicWrite(path.join(root, QA_VIEW_RELATIVE), Buffer.from(rendered, "utf8"), root);
 }
 
 /**
@@ -5240,6 +6792,82 @@ function newInterviewEntry(state: any, input: NewEntryInput, at: string): Interv
   };
 }
 
+/**
+ * Why `qa-ask` refused an id, in the words of what that id is currently doing.
+ *
+ * One sentence used to answer for all seven statuses: *"already exists. Use
+ * qa-supersede to replace it; the history is append-only."* On a `SUPERSEDED` or
+ * an `ANSWERED` entry that is sound advice. On a `PLANNED` one it is wrong in a
+ * way that damages the record, and `PLANNED` is the status the engine itself
+ * creates: `qa-settle --next-id` writes the next question ahead of time, so the
+ * agent that then goes to ask it meets its own planned entry and is told to
+ * supersede it.
+ *
+ * Superseding is the correction of a *wrong answer*. Applied to a question that
+ * was never put, it manufactures a chain — `supersedes`/`superseded_by`, a
+ * reason, an event — documenting a correction that never happened, and the
+ * folder's reader has no way to tell that from a real one. In the pilot this
+ * happened three times in one session, and was caught only because a human
+ * remembered the question had never been asked.
+ *
+ * So the refusal names the status and the action the protocol actually defines
+ * for it. Nothing about append-only history changes: an entry still cannot be
+ * rewritten, and the only status that ever wanted `qa-supersede` still gets it.
+ */
+function duplicateQuestionRefusal(entry: InterviewEntry): string {
+  const head = `Question ${entry.id} already exists, as ${entry.status}.`;
+  const tail = `Nothing was written.`;
+  const answer =
+    `plangonaut qa-answer --project-root . --id ${entry.id} --answer-file <file> --owner <owner> --operation-id <id>`;
+  switch (entry.status) {
+    case "PLANNED":
+      return (
+        `${head} It was written ahead of time — by qa-settle --next-id, or by qa-ask --planned — and has not been put to anyone yet, ` +
+        `so there is no answer to correct and nothing to supersede.\n` +
+        `Ask it, then record what came back:\n  ${answer}\n` +
+        `qa-answer accepts a PLANNED entry and stamps asked_at itself. ${tail}`
+      );
+    case "ASKED":
+      return (
+        `${head} It has been put and is waiting for an answer, so it is already open; asking again would not change the record.\n` +
+        `Record the answer when it arrives:\n  ${answer}\n` +
+        `If it will not be answered, close it with qa-close --kind deferred|skipped and a reason. ${tail}`
+      );
+    case "ANSWERED":
+      // There is no `SETTLED` status, and inventing one in a message would
+      // describe a vocabulary the ledger does not have. Settled is `ANSWERED`
+      // with `consequences_recorded_at` written, so the two cases are told apart
+      // by the field that actually distinguishes them.
+      return nonEmpty(entry.consequences_recorded_at)
+        ? `${head} Its answer was applied at ${entry.consequences_recorded_at}, so the interaction is closed.\n` +
+          `To correct that answer, use qa-supersede — it keeps this entry and records what replaced it:\n` +
+          `  plangonaut qa-supersede --project-root . --id ${entry.id} --new-id <QNA-NNNN> --question "..." --rationale "..." --reason "..." --owner <owner> --operation-id <id>\n` +
+          `To ask something new, open it under an id of its own. ${tail}`
+        : `${head} Its answer is recorded but not yet applied.\n` +
+          `Apply it:  plangonaut qa-settle --project-root . --id ${entry.id} --interpretation "..." --reply-file <file> --owner <owner> --operation-id <id>\n` +
+          `To correct the answer itself, use qa-supersede: the history is append-only. ${tail}`;
+    case "SUPERSEDED":
+      return (
+        `${head} It was already replaced${nonEmpty(entry.superseded_by) ? ` by ${entry.superseded_by}` : ""}, and a superseded entry is kept as history.\n` +
+        `Open the new question under an id of its own. ${tail}`
+      );
+    case "DEFERRED":
+    case "SKIPPED":
+    case "INVALIDATED":
+      return (
+        `${head} It was closed without an answer${nonEmpty(entry.closed_reason) ? `: ${entry.closed_reason}` : ""}.\n` +
+        `Reopening it means asking it again under a new id, so the closure stays readable. ${tail}`
+      );
+    default:
+      // A status this build does not know about: say so rather than guess an
+      // action for it. `qa-settle`'s applied entries arrive here.
+      return (
+        `${head} There is no reopening in place; the history is append-only.\n` +
+        `Correct a recorded answer with qa-supersede, or open a new question under an id of its own. ${tail}`
+      );
+  }
+}
+
 /** The shape `qa-ask` and `qa-supersede` both build from the caller's flags. */
 function entryInputFromFlags(state: any, flags: Flags, id: string, planned: boolean): NewEntryInput {
   const questionModule = resolveQuestionModule(state, flags);
@@ -5286,7 +6914,8 @@ function qaAsk(flags: Flags): void {
   const at = now();
   const log = ensureInterviewLog(state, at);
   const id = normalizeQuestionId(required(flags, "id"));
-  if (findInterviewEntry(state, id)) throw new PlangonautError(`Question ${id} already exists. Use qa-supersede to replace it; the history is append-only.`);
+  const clash = findInterviewEntry(state, id);
+  if (clash) throw new PlangonautError(duplicateQuestionRefusal(clash));
   const entry = newInterviewEntry(state, entryInputFromFlags(state, flags, id, flags.planned === true), at);
   /*
    * "Reconstructed from durable evidence" was an unverified self-declaration:
@@ -5307,6 +6936,8 @@ function qaAsk(flags: Flags): void {
     entry.status = "PLANNED";
   }
   log.push(entry);
+  // Putting a question against a module is the first significant activity on it.
+  const startedModule = touchModule(state, entry.module, at);
   const event = beginInterviewEvent(state, "QUESTION_OPENED", key, {
     at,
     question_id: id,
@@ -5316,6 +6947,7 @@ function qaAsk(flags: Flags): void {
     agent: entry.agent,
     question_sha256: sha256(entry.question),
     reconstructed: entry.reconstructed,
+    module_started: startedModule,
   });
   event.at = at;
   /*
@@ -5334,6 +6966,7 @@ function qaAsk(flags: Flags): void {
   const note = advanceGeneratedNextAction(state, openQuestionsSentence(state));
   commitInterview(root, location, state, event);
   console.log(`Recorded ${id} as ${entry.status}.`);
+  if (startedModule !== null) console.log(moduleStartedLine(startedModule, state));
   if (note) console.log(note);
 }
 
@@ -5357,6 +6990,9 @@ function qaAnswer(flags: Flags): void {
   // was put to someone; recording the instant keeps the pair ordered.
   if (!entry.asked_at) entry.asked_at = at;
   entry.status = "ANSWERED";
+  // An answer counts too: a question may have been reconstructed or planned
+  // before this engine learned to mark the module.
+  const startedModule = touchModule(state, entry.module, at);
   /*
    * The agent that recorded the answer is a different fact from the agent that
    * asked, and this used to overwrite the second with the first. The document
@@ -5371,10 +7007,12 @@ function qaAnswer(flags: Flags): void {
     owner: String(flags.owner).trim(),
     answer_sha256: sha256(answer),
     answered_at: at,
+    module_started: startedModule,
   });
   event.at = at;
   commitInterview(root, location, state, event);
   console.log(`Recorded the answer to ${id}. It is not applied yet: run qa-settle to record what it changed.`);
+  if (startedModule !== null) console.log(moduleStartedLine(startedModule, state));
 }
 
 function qaSettle(flags: Flags): void {
@@ -5475,6 +7113,7 @@ function qaSettle(flags: Flags): void {
     );
   }
   entry.consequences_recorded_at = at;
+  const startedModule = touchModule(state, entry.module, at);
   entry.updated_at = at;
 
   /*
@@ -5560,13 +7199,15 @@ function qaSettle(flags: Flags): void {
     open_points: entry.open_points,
     next_id: entry.next_id,
     module_completed: completedModule,
+    module_started: startedModule,
   });
   event.at = at;
   commitInterview(root, location, state, event);
   console.log(`Settled ${id}: ${consequences.length} record(s), ${documents.length} document(s).`);
+  if (startedModule !== null) console.log(moduleStartedLine(startedModule, state));
   if (completedModule) console.log(`Recorded module ${completedModule.id} as ${completedModule.status} in the same operation.`);
   if (entry.open_points.length) console.log(`${entry.open_points.length} point(s) still open on this answer.`);
-  if (nextActionNote) console.log(`${NL}${nextActionNote}`);
+  if (nextActionNote) console.log(`${NL}${nextActionNotice(root, nextActionNote)}`);
 }
 
 function qaClose(flags: Flags): void {
@@ -5602,7 +7243,7 @@ function qaClose(flags: Flags): void {
   const closedNote = advanceGeneratedNextAction(state, openQuestionsSentence(state));
   commitInterview(root, location, state, event);
   console.log(`${id} is now ${entry.status}.`);
-  if (closedNote) console.log(closedNote);
+  if (closedNote) console.log(nextActionNotice(root, closedNote));
 }
 
 function qaSupersede(flags: Flags): void {
@@ -5663,7 +7304,7 @@ function qaSupersede(flags: Flags): void {
   const supersededNote = advanceGeneratedNextAction(state, openQuestionsSentence(state));
   commitInterview(root, location, state, event);
   console.log(`${oldId} is SUPERSEDED by ${newId}; both remain in the history.`);
-  if (supersededNote) console.log(supersededNote);
+  if (supersededNote) console.log(nextActionNotice(root, supersededNote));
 }
 
 function qaLog(flags: Flags): void {
@@ -6012,7 +7653,7 @@ function record(flags: Flags): void {
   const event = { event_id: eventId, type: "MODULE_RECORDED", state_revision: revision, at: timestamp, idempotency_key: key, module: moduleId, status: outcome, owner: flags.owner, evidence: module.evidence, evidence_sha256: module.evidence_sha256 };
   commitState(root, location, state, event);
   console.log(`Recorded module ${moduleId} as ${outcome}`);
-  if (nextActionNote) console.log(`\n${nextActionNote}`);
+  if (nextActionNote) console.log(`\n${nextActionNotice(root, nextActionNote)}`);
 }
 
 function override(flags: Flags): void {
@@ -6021,10 +7662,17 @@ function override(flags: Flags): void {
   if (checkIdempotency(root, key)) return console.log(`Idempotent retry: override already applied.`);
   const { location, state } = loadState(root);
   assertKnownOwner(state, required(flags, "owner"));
+  // The instruction file is the override's own text, and the ledger records the
+  // path to it. It therefore obeys the same rule as every other travelling
+  // record — see `recordedSourceFile`, which is now the only place that rule is
+  // written down.
   const sourcePath = path.resolve(required(flags, "instruction-file"));
-  const bytes = fs.readFileSync(sourcePath);
+  const source = recordedSourceFile(root, "Override instruction", sourcePath, {
+    suffix: "\nNothing was written; no override was recorded.",
+  });
+  const bytes = fs.readFileSync(source.absolute);
   const timestamp = now();
-  const item = { id: `OVR-${crypto.randomBytes(6).toString("hex")}`, status: "OPEN", owner: required(flags, "owner"), reason: typeof flags.reason === 'string' ? flags.reason : "Human direction changed by prompt", source: canonicalRelative(path.relative(root, sourcePath)) || path.basename(sourcePath), source_sha256: sha256(bytes), summary: bytes.toString("utf8").replace(/\s+/g, " ").slice(0, 240), created_at: timestamp };
+  const item = { id: `OVR-${crypto.randomBytes(6).toString("hex")}`, status: "OPEN", owner: required(flags, "owner"), reason: typeof flags.reason === 'string' ? flags.reason : "Human direction changed by prompt", source: source.relative, source_sha256: source.hash, summary: bytes.toString("utf8").replace(/\s+/g, " ").slice(0, 240), created_at: timestamp };
   state.human_overrides.push(item);
   state.needs_reconciliation = true;
   // `needs_reconciliation` already carries the block, and `plangonaut next` refuses on
@@ -6044,7 +7692,7 @@ function override(flags: Flags): void {
   commitState(root, location, state, event);
   console.log(`Recorded human override ${item.id}; downstream work requires reconciliation.`);
   if (overrideNextActionNote) console.log(`
-${overrideNextActionNote}`);
+${nextActionNotice(root, overrideNextActionNote)}`);
 }
 
 /**
@@ -6087,13 +7735,11 @@ function reconcile(flags: Flags): void {
   // to be read from any absolute path the caller named, which is how a ledger
   // came to carry the digest of a document the package could not contain.
   const evidencePath = path.resolve(required(flags, "evidence-file"));
-  const evidenceRelative = canonicalRelative(path.relative(root, evidencePath));
-  const evidenceRefusal = artifactPathRefusal("Reconciliation evidence", evidenceRelative);
-  if (evidenceRefusal) throw new PlangonautError(`${evidenceRefusal}\nNothing was written.`);
-  const confinedEvidence = existingFileInside(root, evidenceRelative);
-  if (!confinedEvidence) throw new PlangonautError(`Reconciliation evidence must be an existing file inside the project root: ${evidencePath}\nNothing was written.`);
-  const bytes = fs.readFileSync(confinedEvidence);
-  if (!bytes.length || !bytes.toString("utf8").trim()) throw new PlangonautError(`Reconciliation evidence cannot be empty: ${evidenceRelative}\nNothing was written.`);
+  const reconciliationEvidence = recordedSourceFile(root, "Reconciliation evidence", evidencePath, {
+    suffix: "\nNothing was written.",
+  });
+  const evidenceRelative = reconciliationEvidence.relative;
+  const bytes = fs.readFileSync(reconciliationEvidence.absolute);
 
   const supplied = typeof flags["next-action"] === "string" ? String(flags["next-action"]).trim() : null;
   if (typeof flags["next-action"] === "string" && !supplied) throw new PlangonautError(`--next-action cannot be empty. Omit it to keep what is recorded. Nothing was written.`);
@@ -6238,15 +7884,10 @@ function ledgerMutation(kind: string, flags: Flags): void {
     record = { id, name: required(flags, "name").trim(), status, owner };
     if (!record.name) throw new PlangonautError(`--name cannot be empty`);
   } else if (kind === "evidence") {
-    const file = path.resolve(required(flags, "file"));
-    const relative = path.relative(root, file);
-    const evidenceRefusal = artifactPathRefusal("Evidence", relative);
-    if (evidenceRefusal) throw new PlangonautError(evidenceRefusal);
-    const confined = existingFileInside(root, relative);
-    if (!confined) throw new PlangonautError(`Evidence must be an existing file inside the project root`);
-    const bytes = fs.readFileSync(confined);
-    if (!bytes.length) throw new PlangonautError(`Evidence file is empty: ${relative}`);
-    record = { id, path: relative.replaceAll("\\", "/"), sha256: sha256(bytes), owner };
+    const verified = recordedSourceFile(root, "Evidence", path.resolve(required(flags, "file")), {
+      suffix: "\nNothing was written.",
+    });
+    record = { id, path: verified.relative, sha256: verified.hash, owner };
   } else {
     record = { id, name: required(flags, "name").trim(), owner };
     if (!record.name) throw new PlangonautError(`--name cannot be empty`);
@@ -6282,15 +7923,69 @@ function ledgerMutation(kind: string, flags: Flags): void {
   console.log(`${existing ? "Updated" : "Created"} ${kind} ${id} at revision ${record.revision}`);
 }
 
-function verifiedEvidence(root: string, sourcePath: string): { relative: string; hash: string } {
-  const relative = path.relative(root, sourcePath);
-  const evidenceRefusal = artifactPathRefusal("Evidence", relative);
-    if (evidenceRefusal) throw new PlangonautError(evidenceRefusal);
+/**
+ * The one check every file destined for a permanent record has to pass.
+ *
+ * There used to be three copies of it and one hole. `reconcile` carried the
+ * check inline, the `evidence` ledger carried it again, `verifiedEvidence`
+ * carried it a third time for gates, blockers and `re-record` — and `override`
+ * carried none at all, so it accepted a path the other three refuse. The pilot
+ * found the consequence rather than the cause: an override was recorded against
+ * a file in a temporary directory, and `validate` refused the project days
+ * later, by which time the file could have been gone and the override's own text
+ * with it. An override is a change of direction; it is among the last things
+ * that may evaporate.
+ *
+ * The asymmetry was the defect, so the remedy is one function rather than a
+ * fourth copy. Everything it rejects it rejects for the same stated reason, and
+ * the reason names the fix: bring the file inside the folder that travels with
+ * the record.
+ *
+ * What is refused, all of it by the helpers that already existed:
+ *
+ *  - an absolute path, and a path climbing out of the root with `..`
+ *    (`safeProjectRelative`, on the `/`-canonical spelling, so a Windows
+ *    `..\..\x` is one climb and not one segment);
+ *  - anything inside the reserved state directories (`safeArtifactPath`);
+ *  - a symlink resolving outside the root, because `existingFileInside`
+ *    compares real paths and not written ones;
+ *  - a file that does not exist, is not a file, or is empty.
+ *
+ * A UNC path and a drive-qualified path are both absolute, so both land in the
+ * first rule without needing one of their own.
+ */
+function recordedSourceFile(
+  root: string,
+  kind: string,
+  sourcePath: string,
+  options: { suffix?: string } = {}
+): { relative: string; hash: string; absolute: string } {
+  const tail = options.suffix ?? "";
+  const relative = canonicalRelative(path.relative(root, sourcePath));
+  const refusal = artifactPathRefusal(kind, relative);
+  if (refusal) {
+    throw new PlangonautError(
+      `${refusal}\n` +
+      `Copy or move the file into the project first, then pass its path relative to the root.${tail}`
+    );
+  }
   const confined = existingFileInside(root, relative);
-  if (!confined) throw new PlangonautError(`Evidence must be an existing file inside the project root`);
+  if (!confined) {
+    throw new PlangonautError(
+      `${kind} must be an existing file inside the project root: ${relative || path.basename(sourcePath)}\n` +
+      `A symbolic link that resolves outside the root is refused for the same reason a path outside it is.${tail}`
+    );
+  }
   const bytes = fs.readFileSync(confined);
-  if (!bytes.length || !bytes.toString("utf8").trim()) throw new PlangonautError(`Evidence file is empty: ${sourcePath}`);
-  return { relative: (relative || path.basename(sourcePath)).replaceAll("\\", "/"), hash: sha256(bytes) };
+  if (!bytes.length || !bytes.toString("utf8").trim()) {
+    throw new PlangonautError(`${kind} cannot be empty: ${relative || path.basename(sourcePath)}${tail}`);
+  }
+  return { relative: relative || path.basename(sourcePath), hash: sha256(bytes), absolute: confined };
+}
+
+function verifiedEvidence(root: string, sourcePath: string): { relative: string; hash: string } {
+  const { relative, hash } = recordedSourceFile(root, "Evidence", sourcePath, { suffix: "\nNothing was written." });
+  return { relative, hash };
 }
 
 function gatePrerequisiteErrors(root: string, state: State, gateId: string): string[] {
@@ -7949,7 +9644,21 @@ function docSave(flags: Flags): void {
   const stale = expectedArtifactErrors(flags, artifact);
   if (stale.length) throw new PlangonautError(`Document save refused:\n- ${stale.join("\n- ")}\nNo changes written.`);
   const expectedToken = previewConfirmationToken(id, basePath, owner, sourceRevision, sourceHash, hash);
-  if (flags["confirm-token"] !== expectedToken) throw new PlangonautError(`Document save refused: run doc-diff and pass its confirmation_token with --confirm-token. No changes written.`);
+  if (flags["confirm-token"] !== expectedToken) {
+    // The refusal names the command that produces what is missing, with this
+    // save's own arguments already in it. The pilot's agent met this message
+    // without them, guessed `--confirm`, and was refused a second time.
+    const why = typeof flags["confirm-token"] === "string" && flags["confirm-token"]
+      ? `The token supplied does not match this change. A token is bound to the artifact, the base path, the owner, the artifact's revision and the content on both sides, so one of those has moved since it was issued.`
+      : `No --confirm-token was supplied, and it is required: it is how the engine knows this exact change was previewed.`;
+    throw new PlangonautError(
+      `Document save refused. ${why}\n\n` +
+      `Run this, and pass the confirmation_token it prints:\n` +
+      `  plangonaut doc-diff --project-root ${flags["project-root"] ?? "."} --id ${id} --base-path ${basePath} --content-file ${flags["content-file"]} --owner ${owner}\n\n` +
+      `Full flow: plangonaut doc-save --help\n` +
+      `No changes written.`
+    );
+  }
   const diff = documentPreview(root, state, { ...flags, id }).diff;
   if (!artifact) {
     artifact = {
@@ -7977,7 +9686,47 @@ function docSave(flags: Flags): void {
   const parsedPath = path.parse(basePath);
   const newWorkingPath = path.posix.join(parsedPath.dir, `${parsedPath.name}-v${newRevision}${parsedPath.ext}`);
   const absoluteNewWorkingPath = boundedOutput(root, newWorkingPath);
-  if (fs.existsSync(absoluteNewWorkingPath) && absoluteNewWorkingPath !== resolveRecorded(root, artifact.working_path || "")) throw new PlangonautError(`Refusing to overwrite untracked working file ${newWorkingPath}`);
+  /*
+   * The guard that refuses to destroy a file Plangonaut did not write, and the
+   * one case that is not destruction.
+   *
+   * The refusal is right and it stays: a working file the ledger does not know
+   * about may be anybody's, and overwriting it is irreversible in a way nothing
+   * here can undo. It is also the guard that caught the pilot's hand-written
+   * architecture document, which is the good news in that finding.
+   *
+   * But it made the repair impossible. An agent that wrote `docs/design-v1.md`
+   * by hand and then tries to record it — passing that same file as
+   * `--content-file`, which is the only sensible thing to pass — is refused for
+   * overwriting a file with its own bytes. So `validate` could name the problem
+   * and the suggested remedy could not run, which is a worse place to be than
+   * not warning at all.
+   *
+   * Byte equality is what separates the two. If the file already on disk hashes
+   * to exactly what this save would write, nothing is lost by claiming it: the
+   * bytes stay, and the only thing that changes is that they now have a digest,
+   * a revision and an owner. Any other content is still refused, unchanged.
+   *
+   * The distinction is stated in the output rather than left silent, because
+   * "adopted the file that was already there" and "wrote a new revision" are
+   * different events for whoever reads the folder afterwards.
+   */
+  const adoptingExistingFile =
+    fs.existsSync(absoluteNewWorkingPath) &&
+    absoluteNewWorkingPath !== resolveRecorded(root, artifact.working_path || "") &&
+    sha256(fs.readFileSync(absoluteNewWorkingPath)) === hash;
+  if (
+    fs.existsSync(absoluteNewWorkingPath) &&
+    absoluteNewWorkingPath !== resolveRecorded(root, artifact.working_path || "") &&
+    !adoptingExistingFile
+  ) {
+    throw new PlangonautError(
+      `Refusing to overwrite untracked working file ${newWorkingPath}\n` +
+      `It is already there with different content, and this save would replace it.\n` +
+      `To record the file as it stands, pass it as --content-file so the bytes match; to replace it, move it aside first.\n` +
+      `Nothing was written.`
+    );
+  }
 
   artifact.working_path = newWorkingPath;
   artifact.revision = newRevision;
@@ -8000,7 +9749,7 @@ function docSave(flags: Flags): void {
   const transaction = beginFileTransaction(root, event, [absoluteNewWorkingPath, ...(priorArtifact?.working_path ? [resolveRecorded(root, priorArtifact.working_path), historyLocation(root, priorArtifact, priorArtifact.revision)] : [])]);
   try {
     if (priorArtifact) archiveCurrentRevision(root, priorArtifact);
-    atomicWrite(absoluteNewWorkingPath, content);
+    atomicWrite(absoluteNewWorkingPath, content, root);
     commitState(root, location, state, event);
     completeFileTransaction(transaction);
   } catch (error) {
@@ -8019,7 +9768,7 @@ function docSave(flags: Flags): void {
   const warnings = removedLines && !deletionIntentIds.length
     ? [`This revision removes ${removedLines} recorded line${removedLines === 1 ? "" : "s"} and no deletion intent was linked. Content is preserved in .beave/history/. Use doc-mark-deletion first when a removal is deliberate, so the reason is recorded with it.`]
     : [];
-  console.log(`${JSON.stringify({ artifact_id: id, working_path: newWorkingPath, revision: newRevision, hash, diff, deletion_intent_ids: deletionIntentIds, warnings }, null, 2)}`);
+  console.log(`${JSON.stringify({ artifact_id: id, working_path: newWorkingPath, revision: newRevision, hash, adopted_existing_file: adoptingExistingFile, diff, deletion_intent_ids: deletionIntentIds, warnings }, null, 2)}`);
 }
 
 function docHistory(flags: Flags): void {
@@ -8094,7 +9843,7 @@ function docRestore(flags: Flags): void {
   const transaction = beginFileTransaction(root, event, [absoluteNewWorkingPath, resolveRecorded(root, priorArtifact.working_path), historyLocation(root, priorArtifact, priorArtifact.revision)]);
   try {
     archiveCurrentRevision(root, priorArtifact);
-    atomicWrite(absoluteNewWorkingPath, content);
+    atomicWrite(absoluteNewWorkingPath, content, root);
     commitState(root, location, state, event);
     completeFileTransaction(transaction);
   } catch (error) {
@@ -8182,7 +9931,7 @@ function docFinalize(flags: Flags): void {
       fs.mkdirSync(path.dirname(supersededSnapshot), { recursive: true });
       fs.copyFileSync(absoluteBase, supersededSnapshot);
     }
-    atomicWrite(absoluteBase, workingBytes);
+    atomicWrite(absoluteBase, workingBytes, root);
     archiveCurrentRevision(root, priorArtifact);
     commitState(root, location, state, event);
     completeFileTransaction(transaction);
@@ -8300,15 +10049,171 @@ function install(flags: Flags): void {
   if (target === "all") console.log("Codex and Gemini share .agents/skills/plangonaut; no duplicate Gemini copy was created.");
 }
 
+/**
+ * The document flow, written once and shown everywhere it is needed.
+ *
+ * The pilot's agent did not skip `doc-diff`/`doc-save` out of carelessness. It
+ * read the skill, which described the *result* — one visible working file per
+ * document, `-vN` advanced — produced exactly that result by hand, and never
+ * learned that two commands existed to produce it. Then, on finally reaching
+ * `doc-save`, it met a mandatory `--confirm-token` that `help` did not list and
+ * that lived only in `engine-contract.md`, tried `--confirm`, and was refused.
+ *
+ * Doing the right thing cost a reference lookup and two failures; writing the
+ * file by hand cost nothing. When that is the ratio, the file gets written by
+ * hand. So the flow is stated in the general help, in this command's own help,
+ * in the refusal when the token is missing, and in the skill — the four places
+ * an agent can be standing when it needs it.
+ */
+const DOCUMENT_FLOW = [
+  `The document flow is two commands, and the second will not run without the first:`,
+  ``,
+  `  1. plangonaut doc-diff --project-root . --id ART-<NAME> --base-path docs/<name>.md \\`,
+  `       --content-file <the file you wrote> --owner <owner>`,
+  `     Writes nothing. Prints the diff that would be applied and a confirmation_token.`,
+  ``,
+  `  2. Read the diff. That is the review the token attests to.`,
+  ``,
+  `  3. plangonaut doc-save --project-root . --id ART-<NAME> --base-path docs/<name>.md \\`,
+  `       --content-file <the same file> --owner <owner> \\`,
+  `       --confirm-token <confirmation_token from step 1> --operation-id <id>`,
+  ``,
+  `About the token:`,
+  `  Purpose      it attests that this exact change was previewed before it was written.`,
+  `  Bound to     the artifact id, the base path, the owner, the artifact's current`,
+  `               revision and digest, and the digest of the content being proposed.`,
+  `  Expiry       none. It is a digest of those six things, not a timer.`,
+  `  Reuse        as long as all six still hold. Change the content, the owner, the`,
+  `               base path, or let the artifact advance a revision, and the old token`,
+  `               stops matching — which is the point: it no longer describes this save.`,
+  `  Refused      a doc-diff that reported blockers returns an empty token, so a`,
+  `               preview the engine refused cannot confirm a save.`,
+].join("\n");
+
+/**
+ * Per-command help.
+ *
+ * `plangonaut help` lists every command on one line each, which is the right
+ * shape for finding a command and the wrong shape for using one: the line for
+ * `doc-save` had eight options on it and was missing the mandatory one. These
+ * entries are for the second moment. A command without an entry falls back to
+ * the general help rather than printing an empty page.
+ */
+const COMMAND_HELP: Record<string, string> = {
+  "doc-diff": [
+    `plangonaut doc-diff — preview a governed document change. Writes nothing.`,
+    ``,
+    `  --project-root DIR     the project`,
+    `  --id ART-<NAME>        the artifact id; invent one for a new document`,
+    `  --base-path PATH       the document's stable name, relative to the root,`,
+    `                         without the -vN suffix (docs/architecture.md)`,
+    `  --content-file FILE    the file holding the proposed content`,
+    `  --owner NAME           one of the five recorded owners`,
+    `  --sources DEC-1,REQ-2  optional: what this revision comes from`,
+    `  --expected-revision N  optional: refuse if the artifact has moved on`,
+    `  --expected-hash HASH   optional: refuse if the content has moved on`,
+    ``,
+    `It prints JSON: the diff, the next revision, and confirmation_token.`,
+    `An empty confirmation_token means the preview found blockers; they are listed`,
+    `in the same document, and doc-save would refuse for the same reasons.`,
+    ``,
+    DOCUMENT_FLOW,
+  ].join("\n"),
+  "doc-save": [
+    `plangonaut doc-save — write a governed document revision.`,
+    ``,
+    `  --project-root DIR     the project`,
+    `  --id ART-<NAME>        the artifact id`,
+    `  --base-path PATH       the document's stable name, relative to the root`,
+    `  --content-file FILE    the file holding the content to write`,
+    `  --owner NAME           one of the five recorded owners`,
+    `  --confirm-token TOKEN  REQUIRED. The confirmation_token doc-diff printed.`,
+    `  --operation-id ID      REQUIRED. 3-128 characters, unique per operation.`,
+    `  --sources DEC-1,REQ-2  optional: what this revision comes from`,
+    `  --expected-revision N  optional: refuse if the artifact has moved on`,
+    `  --expected-hash HASH   optional: refuse if the content has moved on`,
+    ``,
+    `The content is written to <base>-v<N+1>.md and the artifact records its digest.`,
+    `A file already at that path with exactly the same bytes is adopted rather than`,
+    `overwritten, which is how a document written by hand is brought into the ledger.`,
+    `One with different bytes is refused: it may be somebody else's.`,
+    ``,
+    DOCUMENT_FLOW,
+  ].join("\n"),
+  validate: [
+    `plangonaut validate — check that the project's state, history and documents agree.`,
+    ``,
+    `  --project-root DIR     the project`,
+    `  --strict               turn warnings into failures (exit 2)`,
+    ``,
+    `Without --strict it reports two different things and treats them differently.`,
+    `A state that disagrees with its own history, a recorded digest that no longer`,
+    `matches its file, or a record pointing outside the project is a failure.`,
+    `A Markdown document the project looks like it should be governing and does not`,
+    `is a warning: it says nothing about whether the recorded state is sound, and a`,
+    `project is entitled to hold files Plangonaut did not write. --strict is for the`,
+    `caller who has decided it may not — a release check, a handoff, a pipeline.`,
+  ].join("\n"),
+  "qa-ask": [
+    `plangonaut qa-ask — open a question in the interview ledger.`,
+    ``,
+    `  --project-root DIR     the project`,
+    `  --id QNA-0001          the question id`,
+    `  --question TEXT        or --question-file FILE`,
+    `  --rationale TEXT       or --rationale-file FILE: why this question, now`,
+    `  --owner NAME           one of the five recorded owners`,
+    `  --operation-id ID      REQUIRED. 3-128 characters, unique per operation.`,
+    `  --module N             optional: the questionnaire module it belongs to`,
+    `  --planned              record it as intended but not yet asked`,
+    `  --agent NAME           optional: which agent is asking`,
+    ``,
+    `An id that already exists is refused, and the refusal says what that entry is`,
+    `currently doing. A PLANNED entry — one qa-settle --next-id wrote ahead of time —`,
+    `is answered with qa-answer, not superseded: there is no answer to correct yet.`,
+  ].join("\n"),
+  override: [
+    `plangonaut override — record that a person changed the project's direction.`,
+    ``,
+    `  --project-root DIR       the project`,
+    `  --instruction-file FILE  the instruction, as a file INSIDE the project`,
+    `  --owner NAME             one of the five recorded owners`,
+    `  --operation-id ID        REQUIRED. 3-128 characters, unique per operation.`,
+    `  --reason TEXT            optional: why the direction changed`,
+    ``,
+    `The ledger records the path, so the file has to be one the folder can carry: a`,
+    `path inside the project root, not absolute, not climbing out with "..", not a`,
+    `symlink resolving outside, and not inside .plangonaut. Write the instruction`,
+    `into the project first. An override is a change of direction — it is among the`,
+    `last things that may become unreadable.`,
+    ``,
+    `Recording one blocks further questionnaire work until plangonaut reconcile runs.`,
+  ].join("\n"),
+  next: [
+    `plangonaut next — what to work on, and why that before the rest.`,
+    ``,
+    `  --project-root DIR     the project`,
+    `  --count 1|2|3          how many questions to propose (default: by interaction mode)`,
+    ``,
+    `It reads the interview ledger before the questionnaire, so a question already`,
+    `answered is not proposed again, and a question already planned is proposed as`,
+    `itself rather than replaced by a catalogue one. It also reports where the`,
+    `interview has been digging and which modules nothing has touched.`,
+  ].join("\n"),
+};
+
+function commandHelp(command: string): string | null {
+  return COMMAND_HELP[command] ?? null;
+}
+
 function help(): void {
-  console.log("Mutation requirements: pass --operation-id OP-ID to every mutating command. For doc-save, first run doc-diff and pass its confirmation_token as --confirm-token TOKEN.\n");
-  console.log(`Plangonaut ${VERSION}\n\nUsage: plangonaut <command> [options]\n\nAlmost every command that changes the project requires --operation-id <unique-id>,\n3 to 128 characters. It is how a retried command is recognised as the same operation\nrather than applied twice, so it is required rather than generated, and it is omitted\nfrom the lines below only because it belongs to nearly all of them.\n\nThe exception is migrate-brand. It carries its own migration id and its own receipt,\nand is resumed or rolled back by that id rather than retried under an operation id, so\nit neither requires nor uses one. --operation-id is accepted there, as it is on every\ncommand, and has no effect.\n\nThe first command needs an owners file. It is one JSON object with these five keys,\neach naming the person accountable for that kind of decision:\n\n  {\"product\":\"Ada\",\"technical\":\"Ada\",\"budget\":\"Ada\",\"safety\":\"Ada\",\"release\":\"Ada\"}\n\nSave it anywhere and pass its path to --owners-file; the same person may hold more\nthan one role. An unknown key is refused, and so is a missing or empty one. What the\nroles mean, and when they matter, is in skills/plangonaut/references/user-guide.md.\n\nCommands:\n  capabilities\n  init --project-root . --project-name NAME --project-mode Resume --interaction-mode Standard --owners-file owners.json\n  status --project-root .\n  next --project-root . [--count 1|2|3]\n  resume --project-root .\n  record --project-root . --module N --status CONFIRMED --answer-file FILE --owner NAME\n  decision --project-root . --id DEC-ID --title TEXT --status APPROVED --owner NAME [--expected-revision N]\n  requirement --project-root . --id REQ-ID --title TEXT --status ACTIVE --owner NAME [--expected-revision N]\n  task --project-root . --id TSK-ID --title TEXT --status READY --owner NAME [--expected-revision N]\n  dependency --project-root . --id DEP-ID --from REQ-ID --to TSK-ID --type REQUIRES --owner NAME [--expected-revision N]\n  risk --project-root . --id RSK-ID --title TEXT --severity HIGH --status IDENTIFIED --owner NAME [--expected-revision N]\n  evidence --project-root . --id EVD-ID --file FILE --owner NAME [--expected-revision N]\n  agent --project-root . --id AGT-ID --name TEXT --status ACTIVE --owner NAME [--expected-revision N]\n  checkpoint --project-root . --id CHK-ID --name TEXT --owner NAME [--next-action TEXT] [--expected-revision N]\n  blocker-record --project-root . --id BLK-ID --title TEXT --reason TEXT --owner NAME [--evidence-file FILE] [--expected-revision N]\n  blocker-resolve --project-root . --id BLK-ID --resolution TEXT --owner NAME --expected-revision N [--evidence-file FILE]\n  blocker-verify-none --project-root . --owner NAME [--note TEXT]   (records that somebody looked and found none open)\n  override --project-root . --instruction-file FILE --owner NAME [--reason TEXT]\n  re-record --project-root . --kind override|gate --id OVR-ID|G2 --source-file FILE --owner NAME --reason TEXT\n  reconcile --project-root . --override-id ID --evidence-file FILE --owner NAME [--next-action TEXT] [--replace-human-next-action]\n  forecast --project-root . --owner NAME --phase TEXT --known-work TEXT --conditional-work TEXT --questions MIN-MAX --operations MIN-MAX --cycles MIN-MAX --confidence ALTA|MEDIA|BASSA --confidence-reason TEXT --cycle-state REGOLARE|IN_ESPANSIONE|RISCHIO_LOOP|BLOCCATO [--change-reason TEXT: required from the second forecast on, refused on the first] [--expected-revision N]\n  forecast --project-root .    (reads the recorded forecast; ranges only, never a percentage)\n  gate --project-root . --id G2 --status PASSED --evidence-file FILE --owner NAME\n  doc-diff --project-root . --id ART-123 --base-path docs/design.md --content-file temp.md --owner NAME [--expected-revision N --expected-hash HASH]\n  doc-mark-deletion --project-root . --id ART-123 --target TEXT --reason-file FILE --content-file FILE --owner NAME [--expected-revision N --expected-hash HASH]\n  doc-save --project-root . --id ART-123 --base-path docs/design.md --content-file temp.md --owner NAME [--sources DEC-1] [--expected-revision N --expected-hash HASH]\n  doc-history --project-root . --id ART-123\n  doc-restore --project-root . --id ART-123 --revision N --owner NAME [--expected-revision N --expected-hash HASH]\n  doc-finalize --project-root . --id ART-123 --owner NAME [--expected-revision N --expected-hash HASH] [--accept-base-overwrite]\n  qa-ask --project-root . --id QNA-0001 --question TEXT --rationale TEXT --owner NAME [--module N] [--agent NAME] [--planned]
+  console.log("Mutation requirements: pass --operation-id OP-ID to every mutating command. For doc-save, first run doc-diff and pass its confirmation_token as --confirm-token TOKEN.\nAny command takes --help for its own options and, where there is one, its full flow: plangonaut doc-save --help.\n");
+  console.log(`Plangonaut ${VERSION}\n\nUsage: plangonaut <command> [options]\n\nAlmost every command that changes the project requires --operation-id <unique-id>,\n3 to 128 characters. It is how a retried command is recognised as the same operation\nrather than applied twice, so it is required rather than generated, and it is omitted\nfrom the lines below only because it belongs to nearly all of them.\n\nThe exception is migrate-brand. It carries its own migration id and its own receipt,\nand is resumed or rolled back by that id rather than retried under an operation id, so\nit neither requires nor uses one. --operation-id is accepted there, as it is on every\ncommand, and has no effect.\n\nThe first command needs an owners file. It is one JSON object with these five keys,\neach naming the person accountable for that kind of decision:\n\n  {\"product\":\"Ada\",\"technical\":\"Ada\",\"budget\":\"Ada\",\"safety\":\"Ada\",\"release\":\"Ada\"}\n\nSave it anywhere and pass its path to --owners-file; the same person may hold more\nthan one role. An unknown key is refused, and so is a missing or empty one. What the\nroles mean, and when they matter, is in skills/plangonaut/references/user-guide.md.\n\nCommands:\n  capabilities\n  init --project-root . --project-name NAME --project-mode Resume --interaction-mode Standard --owners-file owners.json\n  status --project-root .\n  next --project-root . [--count 1|2|3]\n  resume --project-root .\n  record --project-root . --module N --status CONFIRMED --answer-file FILE --owner NAME\n  decision --project-root . --id DEC-ID --title TEXT --status APPROVED --owner NAME [--expected-revision N]\n  requirement --project-root . --id REQ-ID --title TEXT --status ACTIVE --owner NAME [--expected-revision N]\n  task --project-root . --id TSK-ID --title TEXT --status READY --owner NAME [--expected-revision N]\n  dependency --project-root . --id DEP-ID --from REQ-ID --to TSK-ID --type REQUIRES --owner NAME [--expected-revision N]\n  risk --project-root . --id RSK-ID --title TEXT --severity HIGH --status IDENTIFIED --owner NAME [--expected-revision N]\n  evidence --project-root . --id EVD-ID --file FILE --owner NAME [--expected-revision N]\n  agent --project-root . --id AGT-ID --name TEXT --status ACTIVE --owner NAME [--expected-revision N]\n  checkpoint --project-root . --id CHK-ID --name TEXT --owner NAME [--next-action TEXT] [--expected-revision N]\n  blocker-record --project-root . --id BLK-ID --title TEXT --reason TEXT --owner NAME [--evidence-file FILE] [--expected-revision N]\n  blocker-resolve --project-root . --id BLK-ID --resolution TEXT --owner NAME --expected-revision N [--evidence-file FILE]\n  blocker-verify-none --project-root . --owner NAME [--note TEXT]   (records that somebody looked and found none open)\n  override --project-root . --instruction-file FILE --owner NAME [--reason TEXT]\n  re-record --project-root . --kind override|gate --id OVR-ID|G2 --source-file FILE --owner NAME --reason TEXT\n  reconcile --project-root . --override-id ID --evidence-file FILE --owner NAME [--next-action TEXT] [--replace-human-next-action]\n  forecast --project-root . --owner NAME --phase TEXT --known-work TEXT --conditional-work TEXT --questions MIN-MAX --operations MIN-MAX --cycles MIN-MAX --confidence ALTA|MEDIA|BASSA --confidence-reason TEXT --cycle-state REGOLARE|IN_ESPANSIONE|RISCHIO_LOOP|BLOCCATO [--change-reason TEXT: required from the second forecast on, refused on the first] [--expected-revision N]\n  forecast --project-root .    (reads the recorded forecast; ranges only, never a percentage)\n  gate --project-root . --id G2 --status PASSED --evidence-file FILE --owner NAME\n  doc-diff --project-root . --id ART-123 --base-path docs/design.md --content-file temp.md --owner NAME [--expected-revision N --expected-hash HASH]\n  doc-mark-deletion --project-root . --id ART-123 --target TEXT --reason-file FILE --content-file FILE --owner NAME [--expected-revision N --expected-hash HASH]\n  doc-save --project-root . --id ART-123 --base-path docs/design.md --content-file temp.md --owner NAME --confirm-token TOKEN [--sources DEC-1] [--expected-revision N --expected-hash HASH]\n  doc-history --project-root . --id ART-123\n  doc-restore --project-root . --id ART-123 --revision N --owner NAME [--expected-revision N --expected-hash HASH]\n  doc-finalize --project-root . --id ART-123 --owner NAME [--expected-revision N --expected-hash HASH] [--accept-base-overwrite]\n  qa-ask --project-root . --id QNA-0001 --question TEXT --rationale TEXT --owner NAME [--module N] [--agent NAME] [--planned]
   qa-answer --project-root . --id QNA-0001 --answer-file FILE --owner NAME [--agent NAME]
   qa-settle --project-root . --id QNA-0001 --interpretation TEXT --reply-file FILE --owner NAME [--consequences DEC-1,REQ-2] [--documents docs/a.md] [--open-points TEXT] [--next-id QNA-0002] [--next-question TEXT]
   qa-close --project-root . --id QNA-0001 --kind deferred|skipped|invalidated --reason TEXT --owner NAME
   qa-supersede --project-root . --id QNA-0001 --new-id QNA-0009 --question TEXT --rationale TEXT --reason TEXT --owner NAME
   qa-log --project-root . [--open] [--last] [--json] [--id QNA-0001] [--regenerate]
-  context-pack --project-root . [--output session.md]\n  validate --project-root .\n  migrate --project-root .\n  migrate-brand --project-root . --dry-run                   (what a brand migration would do; writes nothing)\n  migrate-brand --project-root .                             (.beave -> .plangonaut, verified backup and receipt)\n  migrate-brand --project-root . --resume                    (finish one that was interrupted)\n  migrate-brand --project-root . --rollback MIG-ID           (undo one, verifying receipt and backup)\n  migrate-brand --project-root . --rollback MIG-ID --discard-changes  (and throw away what was recorded since)\n  replay --project-root . [--verify]                     (rebuild the state from the events and compare)\n  replay --project-root . --repair --operation-id OP-ID  (put the rebuilt state back, keeping a backup)\n  baseline --project-root . --reason TEXT --owner NAME --operation-id OP-ID\n  recover --project-root . [--apply]                     (interrupted operations: what they are, and finish them)\n  unlock --project-root . [--force]                      (who holds the project lock, and release an abandoned one)\n  project-export --project-root . --output-dir DIR\n  project-verify --package-dir DIR\n  project-import --package-dir DIR --project-root NEW_DIR\n  export --target portable|codex|claude|gemini|agy --output-dir DIR\n  install --target codex|claude|gemini|agy|all [--scope project|workspace|user] [--project-root DIR] [--dry-run]\n  verify-install --target codex|claude|gemini|agy [--scope project|workspace|user] [--project-root DIR]\n  version`);
+  context-pack --project-root . [--output session.md]\n  validate --project-root . [--strict]\n  govern --project-root . --exclude docs/appunti.md --reason TEXT --owner NAME\n  govern --project-root . --include docs/appunti.md --owner NAME\n  migrate --project-root .\n  migrate-backups --project-root . [--apply]        (move a pre-0.3.0-alpha.5 backups/ directory under the ledger)\n  migrate-brand --project-root . --dry-run                   (what a brand migration would do; writes nothing)\n  migrate-brand --project-root .                             (.beave -> .plangonaut, verified backup and receipt)\n  migrate-brand --project-root . --resume                    (finish one that was interrupted)\n  migrate-brand --project-root . --rollback MIG-ID           (undo one, verifying receipt and backup)\n  migrate-brand --project-root . --rollback MIG-ID --discard-changes  (and throw away what was recorded since)\n  replay --project-root . [--verify]                     (rebuild the state from the events and compare)\n  replay --project-root . --repair --operation-id OP-ID  (put the rebuilt state back, keeping a backup)\n  baseline --project-root . --reason TEXT --owner NAME --operation-id OP-ID\n  recover --project-root . [--apply]                     (interrupted operations: what they are, and finish them)\n  unlock --project-root . [--force]                      (who holds the project lock, and release an abandoned one)\n  project-export --project-root . --output-dir DIR\n  project-verify --package-dir DIR\n  handoff-check --project-root . [--json]                (is this folder enough for somebody who was not here?)\n  project-import --package-dir DIR --project-root NEW_DIR\n  export --target portable|codex|claude|gemini|agy --output-dir DIR\n  install --target codex|claude|gemini|agy|all [--scope project|workspace|user] [--project-root DIR] [--dry-run]\n  verify-install --target codex|claude|gemini|agy [--scope project|workspace|user] [--project-root DIR]\n  version`);
 }
 
 /**
@@ -8452,6 +10357,9 @@ function stateDigest(directory: string): string {
   for (const relative of treeFiles(directory)) {
     if (relative === MIGRATIONS_DIR || relative.startsWith(`${MIGRATIONS_DIR}/`)) continue;
     if (relative === "lock.json") continue;
+    // Machine-local bookkeeping about what has already been printed, not project
+    // state: see `recordNotice`.
+    if (relative === NOTICES_FILE) continue;
     const one = crypto.createHash("sha256").update(fs.readFileSync(path.join(directory, relative))).digest("hex");
     hash.update(relative).update("\u0000").update(one).update("\u0000");
   }
@@ -9012,6 +10920,18 @@ function printJsonError(argv: string[], error: any): void {
   console.log(JSON.stringify(payload, null, 2));
 }
 
+/**
+ * A non-zero exit from a command that answered rather than refused.
+ *
+ * `handoff-check --json` reports `deliverable: false` as *data*: the JSON is the
+ * answer, and a refusal document would replace it with something the caller did
+ * not ask for. A pipeline still needs the exit code. Setting `process.exitCode`
+ * from inside the command does not work — `bin/plangonaut.ts` assigns
+ * `process.exitCode = await main(...)` afterwards and overwrites it — so the
+ * code travels the same way every other outcome does: through `main`'s return.
+ */
+let reportedExitCode = 0;
+
 export async function main(argv: string[]): Promise<number> {
   // The tests drive `main` in one process, one command after another. A
   // transaction left open by a command that threw would otherwise be adopted by
@@ -9019,9 +10939,18 @@ export async function main(argv: string[]): Promise<number> {
   activeTransaction = null;
   pendingOperation = null;
   recoveredInThisRun = [];
+  reportedExitCode = 0;
   runningCommand = argv[0] ?? "beave";
   try {
     const { command, flags } = parse(argv);
+    // `--help` is answered before the options are checked, and before anything
+    // is required. Someone reaching for it does not know the options yet — that
+    // is what they are asking — so refusing them for an unknown one, or for a
+    // missing `--project-root`, answers a question nobody asked.
+    if (flags.help === true && command && commandHelp(command)) {
+      console.log(commandHelp(command));
+      return 0;
+    }
     assertKnownOptions(command, flags);
     if (!command || command === "help" || command === "--help" || command === "-h") help();
     // The product name travels with the number, because something has to read
@@ -9074,7 +11003,38 @@ export async function main(argv: string[]): Promise<number> {
       // format is, and is told what it cannot prove rather than refused.
       const history = historyErrors(root, state);
       if (history.errors.length) throw new PlangonautError(`Validation failed:\n- ${history.errors.join("\n- ")}`, "PROJECT_STATE_UNTRUSTED");
+      // Documents the project looks like it should be governing.
+      //
+      // A warning by default and an error under `--strict`, and that order round
+      // is deliberate. An anomaly that only speaks behind a flag is invisible to
+      // exactly the person who does not know the flag exists — which is everyone
+      // meeting this for the first time, including the agent in the pilot. So
+      // `validate` always says it, and `--strict` is for the caller who has
+      // decided the project may not carry one: a release check, a handoff, a
+      // pipeline.
+      const unclaimed = unclaimedDocumentReport(root, state);
+      if (unclaimed.findings.length && flags.strict === true) {
+        throw new PlangonautError(
+          `Validation failed (--strict):\n- ${unclaimed.findings.join("\n- ")}\n\n${unclaimed.remedy.join("\n")}`,
+          "PROJECT_STATE_UNTRUSTED"
+        );
+      }
       console.log("Plangonaut state is valid.");
+      if (unclaimed.findings.length) {
+        console.log(`\nWARNING: ${unclaimed.findings.length === 1 ? "one document is" : `${unclaimed.findings.length} documents are`} outside the ledger.`);
+        for (const line of unclaimed.findings) console.log(`- ${line}`);
+        console.log(`\n${unclaimed.remedy.join("\n")}`);
+        console.log(`\nThe state above is valid; these files are not part of it. --strict makes this an error.`);
+      }
+      // Reported, never acted on. See `legacyBackupDirectories`.
+      const legacy = legacyBackupDirectories(root);
+      if (legacy.length) {
+        const total = legacy.reduce((sum, entry) => sum + entry.files, 0);
+        console.log(`\nNOTE: ${total} backup file${total === 1 ? " sits" : "s sit"} outside ${STATE_DIR}/, in ${legacy.map((entry) => `${entry.relative}/`).join(", ")}.`);
+        console.log(`This engine writes them under ${STATE_DIR}/${DOCUMENT_BACKUPS}/ instead. The existing ones are left exactly where they are — they are backups, and some may hold the only copy of a revision.`);
+        console.log(`To move them, verified by digest and with a receipt: plangonaut migrate-backups --project-root . --apply`);
+        console.log(`To see what that would do first, run it without --apply.`);
+      }
       // Said out loud, because the alternative is the defect B5 was: a project
       // reporting "valid" over gates whose evidence nothing had looked at since.
       const gapNote = unverifiableGateNote(state);
@@ -9082,6 +11042,9 @@ export async function main(argv: string[]): Promise<number> {
       for (const note of history.notes) console.log(`\n${note}`);
     }
     else if (command === "migrate") migrate(flags);
+    else if (command === "migrate-backups") migrateBackups(flags);
+    else if (command === "handoff-check") handoffCheck(flags);
+    else if (command === "govern") govern(flags);
     else if (command === "migrate-brand") migrateBrand(flags);
     else if (command === "project-export") projectExport(flags);
     else if (command === "project-verify") projectVerify(flags);
@@ -9090,7 +11053,7 @@ export async function main(argv: string[]): Promise<number> {
     else if (command === "install") install(flags);
     else if (command === "verify-install") verifyInstall(flags);
     else throw new PlangonautError(`Unknown command: ${command}`);
-    return 0;
+    return reportedExitCode;
   } catch (error: any) {
     /*
      * Two channels, never both.
