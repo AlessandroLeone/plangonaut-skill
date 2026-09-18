@@ -157,7 +157,69 @@ The refusals, verbatim, so they are recognisable before they are met:
 
 None of them writes anything. Fix the file and run the same command again.
 
-The audited alpha exposes capabilities, init, status, next, resume, record, the typed ledger commands, the blocker ledger (`blocker-record`, `blocker-resolve`, `blocker-verify-none`), override, reconcile, re-record, gate, context-pack, validate, migrate, document operations, project-export/project-verify/project-import, install, verify-install and skill export. Read [engine-contract.md](engine-contract.md) for exact options and limitations. Structural gate checks do not replace semantic concern review.
+The audited alpha exposes capabilities, init, status, next, resume, record, the typed ledger commands, the blocker ledger (`blocker-record`, `blocker-resolve`, `blocker-verify-none`), override, reconcile, re-record, gate, context-pack, validate, govern, handoff-check, migrate, migrate-backups, document operations, project-export/project-verify/project-import, install, verify-install and skill export. Any command takes `--help` for its own options, and where there is a flow rather than a list of arguments — `doc-save` — it prints the whole of it. Read [engine-contract.md](engine-contract.md) for exact options and limitations. Structural gate checks do not replace semantic concern review.
+
+### Writing a document so it counts
+
+A document Plangonaut governs is written with two commands, never with an editor or a
+file-writing tool. The first writes nothing:
+
+```
+plangonaut doc-diff --project-root . --id ART-ARCH --base-path docs/architecture.md \
+  --content-file draft.md --owner Ada
+```
+
+It prints the diff that would be applied and a `confirmation_token`. Read the diff —
+that reading is what the token attests to — then write it:
+
+```
+plangonaut doc-save --project-root . --id ART-ARCH --base-path docs/architecture.md \
+  --content-file draft.md --owner Ada --confirm-token <token from doc-diff> \
+  --operation-id OP-ARCH-1
+```
+
+The token has no expiry. It is a digest of six things — the artifact, the base path, the
+owner, the artifact's current revision and digest, and the digest of what you are
+proposing — so it stays usable until one of them changes, and stops the moment one does.
+A `doc-diff` that reported blockers hands out an empty token, so a preview the engine
+refused cannot confirm a save.
+
+**If you already wrote the file by hand**, pass that same file as `--content-file`.
+Identical bytes are adopted into the ledger rather than overwritten, and the result says
+`adopted_existing_file: true`. Different bytes are still refused: the file may be
+somebody else's.
+
+`plangonaut validate` reports Markdown that looks like it should be governed and is not —
+a `*-v<N>.md` file no artifact claims, or a new document inside a governed directory. It
+is a warning; `--strict` makes it a failure. If a file is deliberately outside the
+ledger, say so once instead of ignoring the warning forever:
+
+```
+plangonaut govern --project-root . --exclude docs/appunti-v1.md \
+  --reason "working notes, not a project document" --owner Ada --operation-id OP-GOV-1
+```
+
+### Before you hand the folder to somebody else
+
+```
+plangonaut handoff-check --project-root .
+```
+
+`validate` asks whether the record is sound. This asks a different question: whether the
+folder is *enough* for somebody who was not in the conversation. The two are not the
+same, and a project can pass the first for months while failing the second.
+
+It refuses on things that would stop a recipient: a path to something outside the folder
+that no document qualifies, a module still `NOT STARTED`, an empty requirements,
+decisions or tasks ledger, an answer recorded and never applied, an override left open.
+It reports, without refusing, the things worth knowing: a deep dive that left most
+modules untouched, a document outside the ledger, a blocker ledger nobody ever confirmed
+was empty.
+
+When a document genuinely has to point outside the folder, mark the line for what it is —
+`(external dependency)`, `(historical reference)`, `(example)` or `(informative)` — so the
+recipient learns that it is needed and absent, instead of finding a path that does not
+resolve on their machine.
 
 ### Recording what is holding the project up
 

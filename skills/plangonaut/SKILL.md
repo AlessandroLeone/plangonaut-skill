@@ -95,6 +95,27 @@ single question, recover the durable state:
    lower guarantee than the engine's: you are reading a rendering, not verifying
    a ledger.
 6. If there is no Plangonaut state, this is a new project. Start one.
+7. **Read the versions, and report them, before you say anything about this
+   project.** `plangonaut status` and `plangonaut resume` both print four
+   separate facts: the CLI running now, the version that created the project,
+   the version that last wrote to it, and the state schema. They are four facts
+   and not one, and treating them as one has already cost something real — a
+   whole pilot was attributed to the wrong release because the engine on the
+   PATH was one version, the project recorded another, and nothing displayed
+   either.
+
+   Say the numbers to the user at the start of the session. When the CLI and
+   the project differ, say that too: it does not need fixing and nothing is
+   migrated for it, but every observation you make about that project belongs
+   to the engine that wrote it, not to the one you happen to be running.
+
+   **Before attributing a session, a pilot, a defect or a measurement to a
+   release, check which engine actually produced it.** The folder answers this;
+   your assumption does not. If the two disagree, the folder is right.
+
+   A different `schema` is the one case that is not merely informative: the
+   project cannot be read until `plangonaut migrate` has run, and the refusal
+   says so.
 
 The user says *"use Plangonaut and resume this project"* and nothing more. They must
 not have to remember to tell you to run `resume`; running it is what being
@@ -147,20 +168,28 @@ ledger through the CLI in Hybrid, and in the project's durable documents in
 Semantic-only. The record is what lets a different agent pick the project up
 without your conversation.
 
+**Every mutating command requires `--operation-id`**, three to 128 characters and
+unique per operation: it is how a retried command is recognised as the same
+operation instead of being applied twice. It is in every example below because an
+example that does not run teaches an agent to distrust the examples, and the first
+command an agent runs from this file is one of these three.
+
 The cycle is three moments, and they are three commands because they are three
 different facts:
 
 1. **Before** putting a question to the user, open it:
-   `plangonaut qa-ask --id QNA-0007 --question "…" --rationale "…" --module N --owner NAME`.
+   `plangonaut qa-ask --project-root . --id QNA-0007 --question "…" --rationale "…"
+   --module N --owner NAME --operation-id OP-0007-ask`.
    Use `--planned` for a question you intend to ask but have not asked yet.
 2. **After** the user answers, record the answer exactly as given:
-   `plangonaut qa-answer --id QNA-0007 --answer-file answer.txt --owner NAME`.
+   `plangonaut qa-answer --project-root . --id QNA-0007 --answer-file answer.txt
+   --owner NAME --operation-id OP-0007-answer`.
    Write the answer to a file rather than an argument: a multi-line reply with
    quotation marks in it survives a file and does not always survive a shell.
 3. **Before moving on**, record what you did with it:
-   `plangonaut qa-settle --id QNA-0007 --interpretation "…" --reply-file reply.md
-   --consequences DEC-0007,REQ-0011 --documents docs/plan.md --next-id QNA-0008
-   --next-question "…" --owner NAME`.
+   `plangonaut qa-settle --project-root . --id QNA-0007 --interpretation "…"
+   --reply-file reply.md --consequences DEC-0007,REQ-0011 --documents docs/plan.md
+   --next-id QNA-0008 --next-question "…" --owner NAME --operation-id OP-0007-settle`.
 
 Between (2) and (3) the answer is recorded and **not applied**. That gap is
 deliberate and visible: Resume reports it, and an interrupted turn must never
@@ -169,10 +198,13 @@ look finished. Do not invent a fourth state to paper over it.
 - Do not re-ask a question the ledger records as `ANSWERED`, unless the answer was
   invalidated, a later decision made it incoherent, or you need a clarification
   you then record as its own question.
-- A correction never deletes. `plangonaut qa-supersede --id QNA-0007 --new-id QNA-0012`
-  keeps the old entry, its answer and its consequences, and marks what replaced it.
-- `plangonaut qa-close --kind deferred|skipped|invalidated --reason "…"` closes a
-  question without an answer, and the reason is required.
+- A correction never deletes. `plangonaut qa-supersede --project-root . --id QNA-0007
+  --new-id QNA-0012 --question "…" --rationale "…" --reason "…" --owner NAME
+  --operation-id OP-0012` keeps the old entry, its answer and its consequences, and
+  marks what replaced it.
+- `plangonaut qa-close --project-root . --id QNA-0007 --kind deferred|skipped|invalidated
+  --reason "…" --owner NAME --operation-id OP-0007-close` closes a question without an
+  answer, and the reason is required.
 - Record only interactions that define this project. A conversation about
   something else does not belong in its history.
 
@@ -190,7 +222,8 @@ digest of the preceding event. `plangonaut replay --project-root .` rebuilds the
 from those events and compares it with `.plangonaut/state.json`, field by field. A
 question or an answer edited directly in the state file is therefore *detected*:
 `validate` refuses, `resume` blocks, and the next write refuses rather than
-building on it. `plangonaut replay --repair` puts the recorded history back.
+building on it. `plangonaut replay --project-root . --repair --operation-id <id>` puts the recorded
+history back.
 
 **What it still cannot prove.** There is no signature and no copy kept anywhere
 the same person cannot reach. Someone who edits `state.json` *and* rewrites the
@@ -242,7 +275,51 @@ For each module:
 
 The user may pause, narrow the current milestone, or defer future development at any time. Preserve unanswered applicable areas as `DEFERRED`, `PARTIAL`, or `BLOCKED`; never relabel them as complete merely to end the interview.
 
-The interaction mode controls per-turn question count and explanation, never applicable coverage, required evidence or human authority.
+The interaction mode controls per-turn question count and explanation, never
+applicable coverage, required evidence or human authority. Standard bounds how many
+questions you ask **in one turn**. It does not bound how many you ask in total. Ask
+every question the project needs, even when that becomes dozens or hundreds.
+
+### Breadth before depth, and depth declared
+
+A real pilot spent six rounds and nine questions inside one module, reaching JSON
+schema and single-function detail, while sixteen of seventeen modules had never been
+opened. Every command answered OK. The architecture it produced was designed without
+knowing what language the thing would be written in — a module-10 decision that can
+invalidate it. Nothing was wrong with any single step; what was missing was anyone
+relating the depth reached to the ground it stood on.
+
+So, during the interview and not only at the end:
+
+1. **Survey before you dig.** Name the domains this outcome needs before choosing
+   where to start, and say which ones you expect to matter.
+2. **Separate what you can find out from what only a person can decide.** Read the
+   folder first and verify what it says; asking for something already in the files
+   spends a turn and teaches the user that answering is optional.
+3. **Respect prerequisites.** Identity and users come before scope; project type and
+   technology come before architecture, data and delivery. `plangonaut next` reports
+   an unopened prerequisite when it sees one.
+4. **Do not design the final architecture** while identity, users, scope or the
+   technology it needs are still undefined. Sketch and say it is a sketch.
+5. **Declare a deliberate deep dive.** Going deep on one domain is often right. Say
+   that you are doing it, say why, and record it — a choice nobody stated cannot be
+   reviewed and looks like drift.
+6. **Keep the forecast current** — questions, operations, cycles, confidence, cycle
+   state — and re-record it when what you learn changes it.
+7. **Come back up.** After a deep dive, widen again before going deeper anywhere
+   else. The ledger is on one module at a time, so a question you record against
+   a different one is refused unless you say it is deliberate:
+   `--crosscutting --crosscutting-reason "<why>"`. That refusal is not in your
+   way — it is what keeps a deliberate widening distinguishable from losing
+   track of where you were. `plangonaut next` names the first module that is
+   ready to be opened when it reports an imbalance.
+8. **A long conversation is not a finished phase.** Length is not coverage, and
+   neither is a command that answered OK.
+
+When interactions concentrate in a few modules while many stay untouched,
+`plangonaut status` and `plangonaut next` report the imbalance with the threshold
+that triggered it. The warning does not forbid the deep dive. It requires that you
+put it to the user: continue here, or widen. Record the answer either way.
 
 ## Human override
 
@@ -270,6 +347,30 @@ Read [references/research-tools-and-skills.md](references/research-tools-and-ski
 - Inventory what the runtime actually supports; never invent a tool or agent capability.
 - Ask before installing, authenticating, sending project content externally, or enabling persistent services.
 
+### The project folder is what you read
+
+In normal use, read the project folder and nothing else. Do not open files
+elsewhere on the machine, do not copy content in automatically, and never read
+another application's configuration or credentials.
+
+When the user names a starting point that lives outside the project — existing
+code to reuse, a document to build on — ask the question that decides its fate
+before you build on it: **does this travel with the project, or stay where it
+is?** Both answers are legitimate and they lead to different work. Travelling
+means the user brings it into the folder, or you summarise it in place with its
+reasoning and record where the summary came from. Staying means every document
+citing it marks the reference `(external dependency)`, so the recipient learns it
+is needed and absent instead of finding a path that does not resolve.
+
+Not asking is what produces a folder whose strategy rests on files nobody else
+can open. Importing it silently is worse: it puts content into a governed record
+without anybody deciding that it belongs there.
+
+A premise the user states as fact is still a premise. If a plan rests on
+something being reusable, verify it or record that it has not been verified — a
+technical foundation asserted in a brief is exactly where a missing check costs
+the most.
+
 ## Blueprint and artifacts
 
 Persist approved interview records incrementally. Synthesize the blueprint and execution package using [references/artifacts-and-traceability.md](references/artifacts-and-traceability.md) and EXEC-001. Layout follows coverage and consumers; Lean/Standard/Critical are packaging aids, never content limits. Reuse suitable files and show the file plan before creating a new structure.
@@ -284,7 +385,11 @@ The user must approve:
 - multi-agent topology and permissions;
 - initial tool and service set.
 
-Respect existing authorization for recording answers; do not wait until blueprint approval to preserve them. Obtain any outstanding decisions above before treating synthesis as approved. Keep one visible working file per logical document, advance its `-vN` suffix after each confirmed change, retain versions/diffs in `.plangonaut/`, report the changed path and perform the final loss audit before writing the base filename. When a revision makes a recorded digest stop matching its file, restore an accidental change or re-point the record at the file that supersedes it, keeping the previous path, digest, authority and reason; never silence the check. Templates are defaults, not mandatory filenames. Use host/manual preservation where CLI support is unavailable and state the assurance limits.
+Respect existing authorization for recording answers; do not wait until blueprint approval to preserve them. Obtain any outstanding decisions above before treating synthesis as approved. **Write every governed document with `plangonaut doc-diff` and then `plangonaut doc-save`. Never with your own file-writing tool.** This paragraph used to describe the result — one visible working file per logical document, its `-vN` suffix advanced after each confirmed change — without naming the commands that produce it, and in a real pilot an agent read it, produced exactly that result by hand, and left the project's most important document outside the ledger for the whole session: no digest, no revision, no owner, and nothing able to notice it being changed. A document written by hand is not governed no matter how correctly it is named.
+
+The two commands are one flow: `doc-diff` writes nothing and returns a `confirmation_token`; you read the diff, which is the review the token attests to; `doc-save` takes that token in `--confirm-token` and will not run without it. Run `plangonaut doc-save --help` for the whole of it. If you have already written a file by hand, pass that same file as `--content-file`: identical bytes are adopted into the ledger rather than overwritten, so nothing is lost.
+
+`plangonaut validate` reports Markdown that looks governed and is not, and `--strict` makes it a failure. Retain versions and diffs in `.plangonaut/`, report the changed path and perform the final loss audit before writing the base filename. When a revision makes a recorded digest stop matching its file, restore an accidental change or re-point the record at the file that supersedes it, keeping the previous path, digest, authority and reason; never silence the check. Templates are defaults, not mandatory filenames. Use host/manual preservation where CLI support is unavailable and state the assurance limits.
 
 ## Project agent-system design boundary
 
@@ -327,7 +432,21 @@ A Plangonaut initialization run is complete only when:
 - applicable environment, existing conditions and resource baselines have fresh evidence; a Git repository is required only when the project calls for one;
 - permissions and human gates are explicit;
 - the whole agreed outcome has an execution route, sufficiently specified work, acceptance, recovery and completion conditions under EXEC-001; future-dependent detail has resolution procedures and blocking points;
-- the delivered folder has a checked entry point, reading order, durable state and exact first authorized action; a state summary alone is insufficient;
+- the delivered folder has a checked entry point, reading order, durable state and
+  exact first authorized action; a state summary alone is insufficient;
+- **everything the documents rest on is reachable from inside the folder.** Integrity
+  is not sufficiency: `project-verify` proves a package arrived whole and says nothing
+  about whether it is enough. A governed document that builds its technical foundation
+  on files under an absolute path passes every existing check and is useless to the
+  person who receives it, on whose machine that path does not exist. Each such
+  reference must be brought into the folder, summarised in place with its reasoning,
+  or marked `(external dependency)` on its line to declare it needed and deliberately
+  not delivered. A historical reference, an example or an informative link is marked
+  as such and travels as a declaration. `plangonaut handoff-check` reports the
+  unqualified ones and refuses on them;
+- no module is `NOT STARTED`. Unexamined is not the same as not applicable: confirm it,
+  or record `NOT APPLICABLE` with the reason;
+- no governing document is declared superseded without naming what replaced it;
 - any recommended project-agent system exists as reviewed prompts and operating instructions, not as agents silently launched by Plangonaut;
 - the user approves the resulting project system.
 

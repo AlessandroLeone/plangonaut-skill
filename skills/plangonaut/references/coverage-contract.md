@@ -40,6 +40,19 @@ When a premise changes, preserve the old decision, reopen affected concerns and 
 
 Survey breadth before deep design so an early technical choice does not hide a necessary discipline. Then resolve dependencies in a sensible order. Respect per-turn question limits, but continue as many turns as needed. Reuse valid earlier confirmations; do not restart the authority interview on Resume unless authority or scope changed.
 
+**Coverage is a navigation criterion, not only a completion one.** This contract used to be read only at the end, to decide whether enough had been done. Read that way it says nothing during the work, and a pilot showed what that costs: six rounds and nine questions inside one module, down to JSON schema and single-function detail, while sixteen of seventeen modules had never been opened — and every command answered OK. The architecture produced there was designed without knowing what language it would be written in, which is a decision in another module and can invalidate it.
+
+So, while the interview is running and not only at its end:
+
+- compare the depth reached against the breadth reached, and say so when they diverge;
+- do not design a final architecture while identity, users, scope or the technology it needs are   undefined; sketch, and say it is a sketch;
+- when you choose to go deep on one domain, **declare the choice and record it** — a deep dive nobody   stated cannot be reviewed and is indistinguishable from drift;
+- return to breadth afterwards, before going deep anywhere else;
+- keep the recorded forecast current, and re-record it when what you learn changes it;
+- treat a premise the user states as fact as a premise: a technical foundation asserted in a brief is   exactly where a missing check costs the most.
+
+In Hybrid, `plangonaut status` and `plangonaut next` report the imbalance and the threshold that triggered it. The report never refuses the deep dive; it requires that the choice be put to the user and the answer recorded. In Semantic-only the same discipline applies without the reminder.
+
 At each checkpoint report the unresolved frontier, important new discoveries and the next question or investigation. Totals help navigation, but no percentage or module count establishes readiness. A user's request to pause ends the session with unfinished work preserved, not a false completion claim.
 
 ## Readiness assessment
@@ -53,3 +66,5 @@ Record one of these human-readable outcomes with scope, evidence, authority and 
 Deferred product choices that could be resolved now do not become a complete project by attaching a generic “ask later” instruction. If the user intentionally narrows the outcome, record the changed boundary and preserve the excluded work. Do not silently narrow the outcome to pass readiness.
 
 Apply [execution-package.md](execution-package.md) to test whether the folder actually supplies what the executor needs. Readiness of a dossier never claims that the future implementation has already passed its tests.
+
+**Sufficiency is not integrity.** A folder can be internally consistent, digest-verified and complete by every structural check, and still be unusable because what its documents rest on is not in it. Every reference a document makes to something outside the folder is either brought in, summarised in place with its reasoning, or marked as what it is — `(external dependency)`, `(historical reference)`, `(example)`, `(informative)`. Only the first kind, left unqualified, blocks delivery. In Hybrid, `plangonaut handoff-check` reports them.
