@@ -157,7 +157,7 @@ describe("ALN-004 deterministic closure", () => {
     fs.writeFileSync(path.join(root, "empty.md"), "");
     let result = run(["gate", "--project-root", ".", "--id", "G1", "--status", "PASSED", "--evidence-file", "empty.md", "--owner", "A"], root);
     assert.strictEqual(result.status, 2);
-    assert.match(result.stderr, /Evidence file is empty/);
+    assert.match(result.stderr, /Evidence cannot be empty/);
     fs.writeFileSync(path.join(root, "gate.md"), "Human-reviewed purpose evidence.");
     result = run(["gate", "--project-root", ".", "--id", "G1", "--status", "PASSED", "--evidence-file", "gate.md", "--owner", "A"], root);
     assert.strictEqual(result.status, 2);

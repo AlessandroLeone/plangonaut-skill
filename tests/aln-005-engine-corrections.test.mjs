@@ -399,10 +399,16 @@ describe("ALN-005 engine corrections", () => {
       const outcome = recordModule(id);
       assert.strictEqual(outcome.status, 0, outcome.stderr);
       assert.strictEqual(nextAction(), handoff, `record --module ${id} must not touch a human next action`);
-      // The suggestion is still reported, so nothing is lost either way.
-      assert.match(outcome.stdout, /written by a person, so it is kept unchanged/);
+      // The suggestion is still reported on every occurrence, so nothing that
+      // varies is lost. The explanation of why the sentence was kept is given in
+      // full the first time and abbreviated afterwards; only the repetition is
+      // suppressed, never the rule or the suggestion.
       assert.match(outcome.stdout, /Suggested instead: Discuss module \d+ —/);
-      assert.match(outcome.stdout, /plangonaut checkpoint --next-action/);
+      assert.match(outcome.stdout, /a person wrote|written by a person/);
+      if (id === 1) {
+        assert.match(outcome.stdout, /written by a person, so it is kept unchanged/);
+        assert.match(outcome.stdout, /plangonaut checkpoint --next-action/);
+      }
     }
 
     // 4 - every surface a recipient reads still carries it.

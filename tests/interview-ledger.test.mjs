@@ -666,7 +666,7 @@ test("the catalog marks a question the ledger already answers", (t) => {
 
   // `next` used to reprint it word for word, with no idea the ledger existed.
   const out = ok(root, ["next", "--project-root", root, "--count", "2"]);
-  assert.match(out, /Already recorded as answered in QNA-0001/);
+  assert.match(out, /Already in the history as QNA-0001 \(answered\)/);
   assert.match(out, /Do not ask it again unless that answer was invalidated/);
 });
 

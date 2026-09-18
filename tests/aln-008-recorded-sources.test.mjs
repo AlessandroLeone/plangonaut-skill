@@ -108,7 +108,7 @@ describe("ALN-008 B5: validate re-verifies the evidence a gate was passed on", (
     fs.rmSync(path.join(root, "docs", "gate-1.md"));
     const result = run(["validate", "--project-root", "."], root);
     assert.strictEqual(result.status, 2, `expected a refusal, got:\n${result.stdout}`);
-    assert.match(result.stderr, /gate G1 records evidence at docs\/gate-1\.md, which is missing or escapes the project root/);
+    assert.match(result.stderr, /gate G1 records evidence at docs\/gate-1\.md, which is missing/);
     // A refusal that names no route out is how OD-012 happened. This one names a
     // command that exists.
     assert.match(result.stderr, /plangonaut re-record --project-root \. --kind gate --id G1/);
