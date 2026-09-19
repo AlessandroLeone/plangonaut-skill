@@ -66,7 +66,10 @@ module's own ledger, and four things in that ledger contradict it:
 - nothing at all is recorded against it -- no coverage exists to confirm.
 
 `record --status CONFIRMED` names any of these at the write; `validate --strict`
-fails on them and `handoff-check` refuses the handover. A module that genuinely
+fails on them, `handoff-check` refuses the handover, and `next`, `resume` and
+`status` show them before they offer any next step -- the recorded
+`exact_next_action` names the contradiction rather than the next module, so a
+fresh agent reading the folder is not invited to build on it. A module that genuinely
 does not apply is `NOT_APPLICABLE` with its reason; one being left for later is
 `DEFERRED`. Both are honest, and both are available at any moment.
 

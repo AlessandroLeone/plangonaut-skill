@@ -377,12 +377,67 @@ confirm. Module 0 is exempt from the last one: `init` confirms it from the owner
 file, which is the whole of its content. `NOT_APPLICABLE` and `DEFERRED` remain
 available and say something true.
 
-**A question is `ASKED` when it was shown.** `qa-ask` refuses to open more
-concurrent unanswered questions than the interaction mode puts to a user in one
-turn -- one in Guided, two in Standard, three in Expert. `--planned` is always
-allowed, however many are waiting, because writing down a question you intend to
-ask is a different act from asking it. This is the one rule in this group that
-refuses at the write, and it can: `ASKED` has no legitimate batch use.
+**Four interview states, and the engine keeps them four.** `PLANNED` is
+written down and not put; `ASKED` is put to the user; `ANSWERED` has a recorded
+answer; settled is `ANSWERED` with `consequences_recorded_at`, a timestamp only
+the command that applies can write, which is why it is not a status word a caller
+could set.
+
+What the engine does **not** do is claim to know that a question reached
+somebody. An earlier revision of this cycle inferred presentation from a per-turn
+arithmetic -- one, two or three by interaction mode -- and refused past it. It was
+wrong twice: it proved nothing it claimed to prove, since the engine does not see
+the conversation, and it capped the total size of an interview the contract
+requires to be exhaustive. It has been removed. The engine records the agent's
+statement of intention and the order things happened in; the duty behind `ASKED`
+belongs to the skill.
+
+**A block is presentation, not a quota.** `next --count N` lays out one block of
+questions, one to twenty. It does not bound the interview, which has as many
+blocks as the gaps need and ends when every applicable module is `CONFIRMED`,
+`DEFERRED` or `NOT APPLICABLE` with a reason. Interaction mode governs depth and
+tone and has never governed how much interviewing a project is allowed.
+
+The size is a project's own, and is recorded like everything else a person
+decides. `next --count N --remember --owner NAME --operation-id ID` writes
+`question_block_size`; `next --count N` alone sizes one block and records
+nothing, so asking for three questions once never quietly becomes the way the
+project works. `--remember` is what turns this read into a write, the shape
+`replay --repair` and `recover --apply` already have, and `next` without it
+writes nothing at all.
+
+Absent is a state. A project that has never set one carries no field, which is a
+different fact from having chosen five, and nothing backfills it — reading a
+project must not write into it. Readers resolve an absent field to five, and
+`status --json` reports both halves as `question_block_size: { effective,
+recorded }`. `resume` and the context pack carry the effective value near the
+top, above anything a fresh agent would take for a plan, because that is what
+they are read instead of: the conversation the preference was stated in.
+
+**Nothing advances over a contradiction the project already records.** The
+findings `validate --strict` fails on -- a module `CONFIRMED` against its own
+ledger, an unprovenanced approval, a document nobody is governing -- are shown
+first by `next`, by `resume` and in `status --json` as `advance_blocked_by`, and
+the recorded `exact_next_action` written after `record --status CONFIRMED` names
+the contradiction instead of the next module. None of it refuses: the ways out
+are to resolve the finding or to downgrade the claim, and `NOT_APPLICABLE`,
+`DEFERRED` and `PROPOSED` are all honest and all available. A person's recorded
+next action is still never overwritten.
+
+**What counts as a document nobody is governing.** Only Markdown, so an ordinary
+source file, a lockfile, an asset or a build artifact is never reported, whatever
+it is named. Dependency, build and cache trees are not walked -- `node_modules`,
+`vendor`, `third_party`, `dist`, `build`, `out`, `target`, `coverage`, temporary
+directories, anything beginning with a dot -- and neither are recorded exclusions.
+A document is looked for where documents live: the project root, the governed
+directories, and directories whose name says what they hold (`docs`, `specs`,
+`plans`, `decisions`, `adr`, `requirements` and their usual companions). A
+working file inside application code is somebody's note, and reporting it as an
+ungoverned deliverable is a guess dressed as a finding. Markdown that was in the
+folder when the project was initialised belongs to the repository, not to the
+plan, and the repository's own files -- README, CHANGELOG, LICENSE, CONTRIBUTING
+and their companions -- are never reported at any depth. `plangonaut
+handoff-check --help` states this scope.
 
 **A forecast says whose numbers it is.** `forecast` requires `--author
 agent|human` and records it as `authored_by`. `recorded_by` is the owner under

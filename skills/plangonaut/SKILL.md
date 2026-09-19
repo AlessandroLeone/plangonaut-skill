@@ -384,8 +384,8 @@ put it to the user: continue here, or widen. Record the answer either way.
 When you need an answer, the questions come **first**. Everything else is
 context for them or a report about what you did, and both belong underneath.
 
-    1. The questions. One to three, by interaction mode. Each with the one
-       or two sentences needed to answer it, and nothing more.
+    1. The questions. One block. Each with the one or two sentences needed to
+       answer it, and nothing more.
     2. What the previous answers changed. Two or three lines.
     3. Coverage now. Modules confirmed / in progress / never opened.
     4. The forecast, and whose it is.
@@ -398,11 +398,50 @@ to find what you need from them will answer badly, or not at all.
 Do not end a turn with *"shall I continue?"* when the plan already says what the
 next block is. Say what it is and ask it.
 
+### The block is five, and the interview is as long as it needs to be
+
+A **block** is how many questions you put in one turn. It is **five** by default,
+because five is about what somebody can hold in view and answer in one sitting.
+Ask the user at the start what they want — three, five, ten — and use their
+number from then on. They can change it at any time, and you change with it
+without argument.
+
+**Write their answer down.** A preference held in the conversation is a
+preference the next agent never hears about, and it will ask five questions at
+somebody who said three:
+
+    plangonaut next --project-root . --count 3 --remember --owner <owner> --operation-id <id>
+
+`--count N` on its own sizes this one block and records nothing, which is what
+you want when somebody says "just give me a couple now". `--remember` is for
+"this is how we work". After that, `plangonaut next` with no `--count` lays out
+their size, and `resume` and the context pack tell a fresh agent what it is.
+
+A block is a presentation choice. It is **not** a limit on the interview. An
+interview has as many blocks as the gaps need, and ends when every applicable
+module is `CONFIRMED`, `DEFERRED` or `NOT APPLICABLE` with a recorded reason —
+never because a count ran out and never because you judged you had enough to
+start writing. If forty questions are needed, that is eight blocks, and each of
+them is ordinary.
+
+Interaction mode is about depth, tone and how much challenge a question carries.
+It has nothing to do with how much interviewing a project is allowed.
+
+### Four states, and you keep them four
+
+    PLANNED     written down as the next question, not put to anybody yet.
+    ASKED       actually shown to the user, in a turn they can see.
+    ANSWERED    their answer came back and is recorded.
+    settled     the answer has been applied to what it changes — recorded as
+                `consequences_recorded_at`, written only by `qa-settle`.
+
 **`ASKED` means shown.** A question becomes `ASKED` when it has actually been put
-to the user — not when you decided to ask it. One you have prepared and not yet
-shown is `--planned`, and the engine now refuses more concurrent `ASKED`
-questions than the interaction mode puts in a turn, because more than that cannot
-have been shown together.
+to the user, not when you decided to ask it. One prepared and not yet shown is
+`--planned`. The engine cannot see your conversation and does not pretend to: it
+records what you tell it and the order things happened in, and there is no
+arithmetic that can prove a question reached somebody. That guarantee is yours,
+and it is a real duty rather than a formality — a ledger full of questions nobody
+saw is a folder that reads as an interview and is not one.
 
 ## Human override
 

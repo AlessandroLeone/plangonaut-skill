@@ -259,6 +259,27 @@ question, a proposal nobody accepted, or nothing recorded against it at all. A
 module that does not apply is `NOT_APPLICABLE` with the reason; one for later is
 `DEFERRED`.
 
+### How many questions at a time
+
+Five, unless you say otherwise. Say so at the start — three if five is too many,
+ten if you would rather work in longer stretches — and Plangonaut will keep to
+your number. You can change it whenever you like.
+
+Your answer is written into the project, not just remembered for the afternoon:
+
+```
+plangonaut next --project-root . --count 3 --remember --owner Ada --operation-id op-block-3
+```
+
+After that, `plangonaut next` gives you three at a time, and so does whoever
+picks the project up next month. Asking for a different number just once —
+`--count 8` with no `--remember` — is a one-off and changes nothing.
+
+That number is about one turn, not about the whole interview. There are as many
+turns as the project needs, and the interview finishes when every part of the
+questionnaire has been confirmed, deferred or recorded as not applying — never
+because a counter ran out.
+
 ### Recording what is holding the project up
 
 Write a blocker down and it counts; leave it in your head and Plangonaut will say it does not know.

@@ -129,11 +129,22 @@ Use the interaction mode confirmed at Gate G0:
 - Standard: up to two related questions with balanced depth;
 - Expert: up to three related questions with more technical discussion and explicit challenge; evidence follows project risk in every mode.
 
-These limits are now enforced: `qa-ask` refuses to open more concurrent
-unanswered questions than the mode puts to a user in a turn. `--planned` is
-always allowed. `ASKED` means the question was shown to somebody; it is not a
-synonym for "written down", and a batch of questions recorded as asked and never
-put is a folder that reads as an interview and is not one.
+These describe depth, tone and how much challenge a question carries. They
+have never described how much interviewing a project is allowed, and nothing
+enforces them as a cap.
+
+**A block is five, and an interview is as many blocks as it needs.** Put five
+questions in a turn by default; ask the user what they would rather have, and
+record their answer with `plangonaut next --count N --remember`, so the agent
+after you reads it in the folder rather than not at all. `--count N` on its own
+sizes one block and records nothing. The interview ends when every applicable
+module is `CONFIRMED`, `DEFERRED` or `NOT APPLICABLE` with a recorded reason --
+never because a count ran out.
+
+**`ASKED` means shown.** It is not a synonym for "written down", and a batch of
+questions recorded as asked and never put is a folder that reads as an interview
+and is not one. The engine cannot see the conversation and does not pretend to:
+it records the intention and the sequence, and this duty is the agent's.
 
 **Questions come before the report, not after it.** A turn that ends with a
 summary and the questions underneath is a turn whose questions get skipped. Put
