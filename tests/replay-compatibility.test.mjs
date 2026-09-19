@@ -36,6 +36,24 @@ function ok(root, args) {
   return result.out;
 }
 
+/**
+ * A baseline, taken the way a person takes one.
+ *
+ * `baseline` now previews, prints a confirmation token derived from the state
+ * the preview described, and refuses without it. These call sites were written
+ * before that and passed neither — so they go through the same two steps a
+ * caller does, which is a stronger assertion than the one-shot call they
+ * replaced: it proves the token the preview offers is the token the command
+ * accepts.
+ */
+function baselineWithConfirmation(root, args) {
+  const preview = ok(root, [...args, "--dry-run"]);
+  const token = /--confirm-token ([a-f0-9]{12})/.exec(preview);
+  assert.ok(token, `the baseline preview offered no confirmation token:
+${preview}`);
+  return ok(root, [...args, "--confirm-token", token[1]]);
+}
+
 function projectAt(t, root, name) {
   fs.mkdirSync(root, { recursive: true });
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -88,7 +106,7 @@ test("a recorded path spelled the Windows way does not stop a replay", (t) => {
 
   assert.strictEqual(plangonaut(root, ["validate", "--project-root", root]).status, 0);
   ok(root, ["migrate", "--project-root", root]);
-  ok(root, ["baseline", "--project-root", root, "--reason", "Upgraded after normalising historic separators", "--owner", "Ada"]);
+  baselineWithConfirmation(root, ["baseline", "--project-root", root, "--reason", "Upgraded after normalising historic separators", "--owner", "Ada"]);
   assert.match(ok(root, ["replay", "--project-root", root]), /matches its history exactly/);
 });
 

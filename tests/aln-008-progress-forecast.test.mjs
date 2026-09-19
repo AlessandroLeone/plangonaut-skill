@@ -237,17 +237,42 @@ describe("D5 scenario 3: two cycles on the same defect family raise a loop signa
     // read as "not observable here", never as "did not happen".
     const root = projectWithReopenedTask("StatusHistoryStripped");
     const location = path.join(root, ".plangonaut", "events.jsonl");
-    const stripped = fs
+    /*
+     * Aged, not tampered with.
+     *
+     * Removing the field alone left every event carrying a digest of itself
+     * that no longer described it, which is the signature of an edited history
+     * rather than an old one - and the engine now refuses to write on top of
+     * that, correctly. A project written before the field existed recorded its
+     * digests over what it did have, so the fixture recomputes them: the chain
+     * and each payload digest, in order, exactly as the writer of the day
+     * would have left them.
+     */
+    /*
+     * Aged, not tampered with.
+     *
+     * Removing `record_status` on its own left every event carrying a digest of
+     * itself that no longer described it, which is the signature of an edited
+     * history rather than an old one - and the engine refuses to write on top
+     * of that, correctly. A project from before `record_status` was also from
+     * before the replay fields, so those go too. What is left is the shape that
+     * era really wrote, which the engine reads as age rather than as damage.
+     */
+    const REPLAY_FIELDS = [
+      "format", "state_patch", "previous_revision", "previous_state_sha256",
+      "state_sha256", "previous_event_sha256", "payload_sha256",
+    ];
+    const aged = fs
       .readFileSync(location, "utf8")
       .split(/\r?\n/)
       .filter(Boolean)
       .map((line) => {
         const event = JSON.parse(line);
         delete event.record_status;
+        for (const field of REPLAY_FIELDS) delete event[field];
         return JSON.stringify(event);
-      })
-      .join("\n");
-    fs.writeFileSync(location, `${stripped}\n`);
+      });
+    fs.writeFileSync(location, `${aged.join("\n")}\n`);
 
     const recorded = forecast(root, BASE);
     assert.strictEqual(recorded.status, 0, recorded.stderr);

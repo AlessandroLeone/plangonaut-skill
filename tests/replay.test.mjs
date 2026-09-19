@@ -44,6 +44,24 @@ function ok(root, args, env) {
   return result.out;
 }
 
+/**
+ * A baseline, taken the way a person takes one.
+ *
+ * `baseline` now previews, prints a confirmation token derived from the state
+ * the preview described, and refuses without it. These call sites were written
+ * before that and passed neither — so they go through the same two steps a
+ * caller does, which is a stronger assertion than the one-shot call they
+ * replaced: it proves the token the preview offers is the token the command
+ * accepts.
+ */
+function baselineWithConfirmation(root, args) {
+  const preview = ok(root, [...args, "--dry-run"]);
+  const token = /--confirm-token ([a-f0-9]{12})/.exec(preview);
+  assert.ok(token, `the baseline preview offered no confirmation token:
+${preview}`);
+  return ok(root, [...args, "--confirm-token", token[1]]);
+}
+
 function refused(root, args) {
   const result = plangonaut(root, args);
   assert.notStrictEqual(result.status, 0, `expected ${args[0]} to be refused:\n${result.out}`);
@@ -153,7 +171,7 @@ test("a migrated project replays from the baseline it was given, and says what i
   assert.match(before, /NOT REPRODUCIBLE/);
   assert.match(before, /plangonaut baseline/);
 
-  ok(root, ["baseline", "--project-root", root, "--reason", "Upgraded from an engine that recorded digests only", "--owner", "Ada"]);
+  baselineWithConfirmation(root, ["baseline", "--project-root", root, "--reason", "Upgraded from an engine that recorded digests only", "--owner", "Ada"]);
   const after = ok(root, ["replay", "--project-root", root]);
   assert.match(after, /matches its history exactly/);
   assert.match(after, /from BASELINE_RECORDED/);
@@ -289,7 +307,7 @@ test("an edited derived document is repaired from the state, not the other way r
 test("a baseline whose recorded state was altered afterwards is refused", (t) => {
   const root = populated(t);
   ageProject(root);
-  ok(root, ["baseline", "--project-root", root, "--reason", "Upgraded", "--owner", "Ada"]);
+  baselineWithConfirmation(root, ["baseline", "--project-root", root, "--reason", "Upgraded", "--owner", "Ada"]);
   const events = readEvents(root);
   const baselineEvent = events[events.length - 1];
   baselineEvent.state_patch[0].value.decisions[0].title = "Something nobody decided";

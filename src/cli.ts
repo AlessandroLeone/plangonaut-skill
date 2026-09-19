@@ -730,6 +730,9 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   // The three states of completeness, and the two things a project records
   // about how it will be executed.
   "execution-readiness": ["project-root", "json"],
+  // Asked by a different process in a different language: the writer says what
+  // it can do and gets an answer about itself, not about this engine.
+  "compat-check": ["project-root", "json", "writer-engine", "writer-version", "writer-schema", "writer-event-format", "writer-reads-formats"],
   "execution-intent": ["project-root", "definition-only", "execution", "reason", "owner", "operation-id"],
   "execution-org": ["project-root", "executors", "mode", "integrator", "reviewer", "concurrency", "handoff", "owner", "operation-id"],
   "read-record": ["project-root", "path", "purpose", "agent", "conclusions", "used-by", "owner", "operation-id"],
@@ -740,7 +743,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   // question; `--repair` is what turns the answer into a write, and it needs an
   // operation id like every other mutation.
   replay: ["project-root", "verify", "repair", "operation-id"],
-  baseline: ["project-root", "reason", "owner", "operation-id"],
+  baseline: ["project-root", "reason", "owner", "operation-id", "dry-run", "confirm-token"],
   // `--apply` is the write. Without it the command reports and touches nothing:
   // the command someone runs when something has gone wrong should not be the one
   // that changes things.
@@ -1709,6 +1712,36 @@ function releaseProjectLock(): void {
  * removes a lock belonging to a live process or to another machine, and it has
  * to be something a person chose rather than something a retry did.
  */
+/**
+ * Who is holding this project, when anybody is.
+ *
+ * A short answer for the commands that must not run under somebody else's
+ * lock. `unlock` reasons about the record in detail; this only has to say
+ * whether one exists and who wrote it, and an unreadable record counts as held
+ * — an unknown holder is the case to stop on, not the case to ignore.
+ */
+function projectLockHolder(root: string): string | null {
+  const file = lockFile(root);
+  if (!fs.existsSync(file)) return null;
+  const record = readLockRecord(file, false);
+  if (record === null) return "An unreadable lock record";
+  /*
+   * Our own lock is not another writer.
+   *
+   * Every command that loads a state takes the project lock, so a check for
+   * "is anybody holding this" run from inside one finds itself. The first
+   * version of this refused every baseline on that basis, which is the check
+   * working perfectly and answering the wrong question.
+   */
+  if (Number((record as any).pid) === process.pid && (typeof record.host !== "string" || record.host === os.hostname())) {
+    return null;
+  }
+  const owner = typeof (record as any).owner === "string" && (record as any).owner.trim() ? (record as any).owner.trim() : null;
+  const host = typeof record.host === "string" && record.host.trim() ? record.host.trim() : "an unnamed machine";
+  const writer = typeof (record as any).writer === "string" && (record as any).writer.trim() ? (record as any).writer.trim() : "another Plangonaut writer";
+  return `${writer}${owner ? ` (${owner})` : ""} on ${host}`;
+}
+
 function unlock(flags: Flags): void {
   const root = resolveProject(required(flags, "project-root"));
   const file = lockFile(root);
@@ -2345,6 +2378,51 @@ function commitState(root: string, location: string, state: State, event: any, o
 
   const before = fs.existsSync(location) ? readJson(location) : null;
   const tail = lastEventLine(root);
+
+  /*
+   * Not onto a history that cannot be replayed.
+   *
+   * The digest check below only fires when the last event recorded one, so a
+   * foreign event with no digests let every later write straight through — and
+   * that is how the pilot accumulated a run of perfectly good events sitting on
+   * top of one nobody could apply. Each of those writes was individually
+   * correct and each one made the problem larger.
+   *
+   * `baseline` is the exception and has to be: drawing a new starting point
+   * over an unreplayable history is the whole of what it does. It says so with
+   * `replay_origin`, which nothing else sets.
+   */
+  if (event.replay_origin !== true && before !== null) {
+    /*
+     * Damage, not age.
+     *
+     * `historyErrors` already draws this line and draws it in one place: a
+     * history with no replay origin, or none at all, is a project written
+     * before the format and is not an error. A broken chain, a duplicated
+     * event, an event with no applicable mutation - those are. Re-deriving the
+     * distinction here would have been a second opinion about the same
+     * question, and the first version of this guard did exactly that and
+     * refused every legacy project a write.
+     */
+    /*
+     * And only for damage to the history itself.
+     *
+     * A state that has been hand-edited is also an error here, and it already
+     * has a refusal of its own a few lines below that names the fields that
+     * differ. Firing first replaced a precise message with a general one, which
+     * is a worse answer to the same question.
+     */
+    const outcome = replayFromEvents(root);
+    const history = outcome.replayable ? { errors: [] as string[] } : historyErrors(root, before as State);
+    if (history.errors.length) {
+      throw new PlangonautError(
+        `This project's history cannot be replayed, so nothing may be written on top of it:\n  ${history.errors.join("\n  ")}\n\n` +
+        `A new event here would be a verifiable record appended to an unverifiable one, which is how a small break becomes a large one.\n` +
+        `plangonaut replay --verify --project-root . prints the full diagnosis and the one safe way forward. Nothing was written.`,
+        "PROJECT_STATE_UNTRUSTED",
+      );
+    }
+  }
   // A state edited by hand is not overwritten in silence. Only checkable where
   // the previous event recorded a digest: a project whose history predates this
   // format carries none, and no check is invented for it.
@@ -2561,6 +2639,228 @@ function describeDifferences(current: unknown, rebuilt: unknown, limit = 40): st
   return lines;
 }
 
+/**
+ * What is wrong with this history, in enough detail to act on.
+ *
+ * `replayFromEvents` answers "can this be rebuilt" and returns one sentence.
+ * That sentence was correct and was not enough: the pilot's project failed on
+ * *«the history after the replay origin is not uniform»*, and a person reading
+ * it could not tell which event, written by what, missing which fields, with
+ * how much history after it, or what was safe to do next.
+ *
+ * So the sentence stays and this stands behind it. Every reader — `replay
+ * --verify`, `validate`, `status`, `handoff-check` — uses this one function, so
+ * four commands cannot describe the same damage four ways.
+ */
+interface IntegrityDiagnosis {
+  sound: boolean;
+  /** `null` when sound. */
+  defect: {
+    /** 1-based, as an editor counts. */
+    line: number;
+    event_id: string | null;
+    type: string | null;
+    /** The format the event declares, or 1 when it declares none. */
+    detected_format: number;
+    /** Fields its declared format requires and it does not carry. */
+    missing_fields: string[];
+    /** What the engine can say about the value now. */
+    current_value: string;
+    /** What could be rebuilt, when anything could. */
+    reconstructible_value: string | null;
+    /** The last line the chain and the digests verify. */
+    last_verifiable_line: number | null;
+    /** How many events come after the defect. */
+    events_after: number;
+    /** What kind of damage this is. */
+    category: string;
+    /** Which engines are implicated. */
+    versions: string;
+    /** The one safe way forward. */
+    remedy: string[];
+    /** What must not be done, and why. */
+    forbidden: string[];
+  } | null;
+}
+
+function integrityDiagnosis(root: string): IntegrityDiagnosis {
+  const outcome = replayFromEvents(root);
+  if (outcome.replayable) {
+    const location = path.join(stateRoot(root), "state.json");
+    const current = fs.existsSync(location) ? readJson(location) : null;
+    if (current !== null && digestOf(outcome.state) !== digestOf(current)) {
+      const lines = eventLines(root);
+      return {
+        sound: false,
+        defect: {
+          line: lines.length,
+          event_id: lines.length ? (lines[lines.length - 1].event?.event_id ?? null) : null,
+          type: lines.length ? (lines[lines.length - 1].event?.type ?? null) : null,
+          detected_format: EVENT_FORMAT,
+          missing_fields: [],
+          current_value: `state.json is at revision ${current?.revision ?? "?"}, digest ${digestOf(current).slice(0, 12)}…`,
+          reconstructible_value: `the history rebuilds revision ${outcome.throughRevision}, digest ${digestOf(outcome.state).slice(0, 12)}…`,
+          last_verifiable_line: lines.length,
+          events_after: 0,
+          category: "state does not match its own history",
+          versions: `project last written by ${String(current?.last_engine_version ?? "an engine that recorded none")}; this engine is ${VERSION}`,
+          remedy: [
+            `plangonaut replay --project-root . --repair --operation-id <id> rebuilds the state from the events and keeps a backup of what it replaces.`,
+          ],
+          forbidden: [
+            `Editing state.json by hand. The next command would find a state that does not match its history and refuse again, and the backup would be of the edited file.`,
+          ],
+        },
+      };
+    }
+    return { sound: true, defect: null };
+  }
+
+  const lines = eventLines(root);
+  /*
+   * Where it actually goes wrong.
+   *
+   * The reason string carries a line number and parsing it back out would be
+   * building a second source of truth out of a sentence. The line is found the
+   * same way `replayFromEvents` found it instead: the first event after the
+   * replay origin that cannot record a mutation.
+   */
+  let badIndex = -1;
+  const origin = outcome.originIndex >= 0 ? outcome.originIndex : 0;
+  for (let index = origin; index < lines.length; index += 1) {
+    const event = lines[index].event;
+    if (lines[index].malformed) { badIndex = index; break; }
+    if (typeof event?.format !== "number") { badIndex = index; break; }
+    const missing = FORMAT_2_REQUIRED.filter((field) => event?.[field] === undefined);
+    if (event.format >= 2 && missing.length) { badIndex = index; break; }
+  }
+
+  if (badIndex < 0) {
+    // Replay failed for a reason that is not a single bad line: no origin, an
+    // empty history, a duplicated id. Reported as itself rather than pinned on
+    // a line the engine had to guess.
+    return {
+      sound: false,
+      defect: {
+        line: 0,
+        event_id: null,
+        type: null,
+        detected_format: 0,
+        missing_fields: [],
+        current_value: outcome.reason ?? "the history cannot be replayed",
+        reconstructible_value: null,
+        last_verifiable_line: null,
+        events_after: lines.length,
+        category: "history cannot be replayed",
+        versions: `this engine is ${VERSION}`,
+        remedy: [`plangonaut replay --verify --project-root . prints the whole comparison.`],
+        forbidden: [],
+      },
+    };
+  }
+
+  const event = lines[badIndex].event ?? {};
+  const declared = typeof event.format === "number" ? event.format : 1;
+  const missing = declared >= 2
+    ? FORMAT_2_REQUIRED.filter((field) => event[field] === undefined)
+    : FORMAT_2_REQUIRED.filter((field) => event[field] === undefined);
+  const after = lines.length - badIndex - 1;
+
+  return {
+    sound: false,
+    defect: {
+      line: badIndex + 1,
+      event_id: typeof event.event_id === "string" ? event.event_id : null,
+      type: typeof event.type === "string" ? event.type : null,
+      detected_format: declared,
+      missing_fields: missing,
+      current_value: `the event records ${Object.keys(event).length} fields and no mutation this engine can apply`,
+      /*
+       * Honest about what cannot be rebuilt.
+       *
+       * The event says what changed in prose — an artifact id, a revision, a
+       * hash — and not how the state changed. A patch could be *guessed* from
+       * the state as it stands, and a guessed mutation presented as a recorded
+       * one is the failure this whole mechanism exists to prevent.
+       */
+      reconstructible_value: null,
+      last_verifiable_line: badIndex > 0 ? badIndex : null,
+      events_after: after,
+      category: declared < 2
+        ? "an event written in an older format, inside a history that had moved on"
+        : "an event declaring a format whose required fields it does not carry",
+      versions:
+        `the event was written by a writer producing event format ${declared}; this history is at format ${EVENT_FORMAT} and this engine reads ${READABLE_EVENT_FORMATS.join(", ")}`,
+      remedy: [
+        `plangonaut baseline --project-root . --dry-run --reason "<why>" --owner <name> shows what a new starting point would prove and what it would leave outside the proof.`,
+        `Run it without --dry-run to record one. Everything from the baseline forward is reproducible; everything before it stays in the file, readable and explicitly unproven.`,
+        after > 0
+          ? `The ${after} event${after === 1 ? "" : "s"} after line ${badIndex + 1} ${after === 1 ? "is" : "are"} intact and ${after === 1 ? "is" : "are"} carried across a baseline.`
+          : `Nothing follows the defect, so a baseline loses no later work.`,
+      ],
+      forbidden: [
+        `plangonaut replay --repair. It rebuilds the state from what it can apply, and it cannot apply this line — the result would silently omit this event and the ${after} after it. The command refuses for that reason and must not be forced.`,
+        `Deleting or rewriting the event. The digest chain covers it; removing a line breaks every event after it, and editing one makes the history say something nobody recorded.`,
+        `Accepting it as a decision. An integrity failure is not a priority call: see the refusal in \`decisionsCannotWaiveIntegrity\`.`,
+      ],
+    },
+  };
+}
+
+/**
+ * A human decision can change what a project does. It cannot change what happened.
+ *
+ * The distinction this engine has to hold, and the one the pilot's folder tried
+ * to blur: an owner may decide that a risk is accepted, that a requirement is
+ * dropped, that a deadline matters more than a feature. None of those is a
+ * statement about whether the recorded history reproduces the recorded state.
+ *
+ * So there is no flag, no override and no decision status that turns a broken
+ * chain into a sound one, and this function exists to be the single place that
+ * says so — quoted verbatim wherever somebody is likely to look for the flag.
+ */
+function decisionsCannotWaiveIntegrity(): string[] {
+  return [
+    `An integrity failure is not a matter of priority and cannot be accepted, deferred or overridden.`,
+    `A decision can change what this project builds and in what order. It cannot make an unreproducible history reproducible,`,
+    `an event without an applicable mutation applicable, a broken digest chain whole, or an unrecorded change recorded.`,
+    `This engine has no flag for it, on purpose. Execution readiness and handoff readiness both fail while it stands.`,
+  ];
+}
+
+/** The lines every command prints about a damaged history, in the same words. */
+function integrityLines(diagnosis: IntegrityDiagnosis): string[] {
+  if (diagnosis.sound || !diagnosis.defect) return [];
+  const defect = diagnosis.defect;
+  const lines = [
+    `Mechanical integrity: FAILED (${defect.category}).`,
+    ``,
+  ];
+  if (defect.line > 0) {
+    lines.push(
+      `  event line              ${defect.line}`,
+      `  event id                ${defect.event_id ?? "not recorded"}`,
+      `  type                    ${defect.type ?? "not recorded"}`,
+      `  detected event format   ${defect.detected_format}`,
+      `  missing required fields ${defect.missing_fields.length ? defect.missing_fields.join(", ") : "none"}`,
+      `  current value           ${defect.current_value}`,
+      `  reconstructible value   ${defect.reconstructible_value ?? "none — the event records no mutation, and a guessed one would be an invention"}`,
+      `  last verifiable event   ${defect.last_verifiable_line === null ? "none" : `line ${defect.last_verifiable_line}`}`,
+      `  events after it         ${defect.events_after}`,
+      `  versions                ${defect.versions}`,
+      ``,
+    );
+  }
+  lines.push(`Safe remedy:`);
+  for (const line of defect.remedy) lines.push(`- ${line}`);
+  if (defect.forbidden.length) {
+    lines.push(``, `Do not:`);
+    for (const line of defect.forbidden) lines.push(`- ${line}`);
+  }
+  lines.push(``, ...decisionsCannotWaiveIntegrity());
+  return lines;
+}
+
 /** The sentence Resume, validate and replay all print, so they cannot disagree. */
 function replaySummary(root: string, outcome: ReplayOutcome, current: any): { ok: boolean; lines: string[] } {
   const lines: string[] = [];
@@ -2621,7 +2921,13 @@ function replay(flags: Flags): void {
     const outcome = replayFromEvents(root);
     const summary = replaySummary(root, outcome, current);
     for (const line of summary.lines) console.log(line);
-    if (!summary.ok) throw new PlangonautError("The project state cannot be verified against its history.");
+    if (!summary.ok) {
+      // The sentence above says what failed; this says enough to act on it.
+      const diagnosis = integrityDiagnosis(root);
+      const detail = integrityLines(diagnosis);
+      if (detail.length) console.log(`\n${detail.join("\n")}`);
+      throw new PlangonautError("The project state cannot be verified against its history.");
+    }
     return;
   }
 
@@ -2639,7 +2945,32 @@ function replay(flags: Flags): void {
   const current = fs.existsSync(location) ? (readJson(location) as State) : null;
   if (checkIdempotency(root, key)) return console.log(`Idempotent retry: this repair is already recorded.`);
   const outcome = replayFromEvents(root);
-  if (!outcome.replayable) throw new PlangonautError(`Nothing can be rebuilt: ${outcome.reason}`);
+  if (!outcome.replayable) {
+    /*
+     * A repair that omits events is not a repair.
+     *
+     * The dangerous shape is an event this engine cannot apply followed by
+     * events it can: rebuilding "what is applicable" produces a state that is
+     * internally consistent, verifies cleanly, and quietly does not contain the
+     * work those events recorded. The command refuses, and says how much would
+     * have gone, because "nothing can be rebuilt" alone reads like a dead end
+     * rather than like a choice between two roads.
+     */
+    const diagnosis = integrityDiagnosis(root);
+    const after = diagnosis.defect?.events_after ?? 0;
+    throw new PlangonautError(
+      `Nothing can be rebuilt: ${outcome.reason}\n\n` +
+      (diagnosis.defect && diagnosis.defect.line > 0
+        ? `Rebuilding only what is applicable would drop event line ${diagnosis.defect.line} and the ${after} event${after === 1 ? "" : "s"} after it, ` +
+          `and would produce a state that verifies cleanly while missing what they recorded. This command will not do that.\n\n` +
+          `The road that does not lose them:\n` +
+          `  plangonaut baseline --project-root . --dry-run --reason "<why>" --owner <name>\n` +
+          `It records a new starting point, carries the later events across it, keeps the earlier ones in the file marked unproven, and states the boundary of the proof.\n`
+        : ``) +
+      `Nothing was changed.`,
+      "PROJECT_STATE_UNTRUSTED",
+    );
+  }
   if (current !== null && digestOf(outcome.state) === digestOf(current)) {
     return console.log("Nothing to repair: the state already matches its history exactly.");
   }
@@ -2721,12 +3052,37 @@ function replay(flags: Flags): void {
  */
 function baseline(flags: Flags): void {
   const root = resolveProject(required(flags, "project-root"));
+  /*
+   * Who held the project before this command did.
+   *
+   * Read first, because `loadState` takes the lock itself: asking afterwards
+   * finds our own record and answers "nobody", which is the check working
+   * perfectly and looking in the wrong place.
+   */
+  const heldBy = projectLockHolder(root);
   const key = idempotencyKey(flags);
   const { location, state } = loadState(root);
   if (checkIdempotency(root, key)) return console.log(`Idempotent retry: this baseline is already recorded.`);
   assertKnownOwner(state, required(flags, "owner"));
   const reason = required(flags, "reason").trim();
   if (!reason) throw new PlangonautError("--reason cannot be empty: a baseline records why the history before it is not reproducible.");
+
+  /*
+   * Not while another writer is holding the project.
+   *
+   * A baseline rewrites what the replay proves, and doing that under a lock
+   * somebody else owns is the one way to produce a history two processes
+   * disagree about. Studio takes a lock for a governed edit; if one is held and
+   * it is not ours, this stops.
+   */
+  if (heldBy) {
+    throw new PlangonautError(
+      `${heldBy} is holding this project.\n` +
+      `A baseline changes what the replay proves, and taking one while another writer has the project open is how two processes come to disagree about the same history.\n` +
+      `Close the other writer, or release an abandoned lock with plangonaut unlock --project-root .\nNothing was written.`,
+      "PROJECT_STATE_UNTRUSTED",
+    );
+  }
 
   const existing = replayFromEvents(root);
   if (existing.replayable && digestOf(existing.state) === digestOf(state)) {
@@ -2735,9 +3091,63 @@ function baseline(flags: Flags): void {
     return;
   }
 
+  const lines = eventLines(root);
+  const diagnosis = integrityDiagnosis(root);
+
+  /*
+   * What the baseline would prove, and what it would not, before it is taken.
+   *
+   * A baseline is not reversible in the sense that matters: the events before
+   * it stay in the file but stop being part of what replay proves, and somebody
+   * reading the project a year later needs that boundary to have been a
+   * decision rather than a side effect. So it can be looked at first, and the
+   * preview and the real run print the same boundary sentence.
+   */
+  const boundary = [
+    `A baseline would record a new starting point at revision ${Number(state.revision) + 1}.`,
+    ``,
+    `  events in the file now        ${lines.length}`,
+    `  events left outside the proof ${lines.length}${lines.length ? ` (lines 1-${lines.length})` : ""}`,
+    `  proven from                   revision ${Number(state.revision) + 1} onward`,
+    diagnosis.defect && diagnosis.defect.line > 0
+      ? `  the defect it steps over      line ${diagnosis.defect.line}${diagnosis.defect.type ? ` (${diagnosis.defect.type})` : ""}, ${diagnosis.defect.category}`
+      : `  the defect it steps over      the history cannot be replayed from any point in it`,
+    ``,
+    `What a baseline does **not** do: it does not make the events before it reproducible, it does not verify them,`,
+    `and it is not retroactive evidence that what they record actually happened. They stay in the file, readable,`,
+    `and explicitly outside the proof. Anything resting on them rests on them exactly as much as it did before.`,
+  ];
+
+  if (flags["dry-run"] === true) {
+    for (const line of boundary) console.log(line);
+    console.log(``);
+    console.log(`Nothing was written. To record it:`);
+    console.log(`  plangonaut baseline --project-root . --reason "${reason}" --owner ${required(flags, "owner")} --operation-id <id> --confirm-token ${baselineToken(root, state)}`);
+    return;
+  }
+
+  /*
+   * Confirmed, with a token that belongs to this project at this revision.
+   *
+   * A plain `--yes` would confirm whatever the project happened to be when the
+   * command ran, which is not what the person looked at in the preview. The
+   * token is derived from the state the preview described, so a baseline
+   * confirmed against a project that has moved on is refused rather than
+   * applied to something nobody read.
+   */
+  const expectedToken = baselineToken(root, state);
+  const suppliedToken = typeof flags["confirm-token"] === "string" ? String(flags["confirm-token"]).trim() : "";
+  if (suppliedToken !== expectedToken) {
+    for (const line of boundary) console.log(line);
+    throw new PlangonautError(
+      suppliedToken
+        ? `The confirmation token does not match this project at revision ${state.revision}. It was taken against a different state, so what was reviewed is not what would be recorded. Run --dry-run again. Nothing was written.`
+        : `A baseline needs confirming. Look at what it would do first:\n  plangonaut baseline --project-root . --dry-run --reason "${reason}" --owner ${required(flags, "owner")}\nthen pass the --confirm-token it prints. Nothing was written.`,
+    );
+  }
+
   const at = now();
   const eventId = crypto.randomUUID();
-  const lines = eventLines(root);
   const stateBackup = backupName(location);
   fs.mkdirSync(path.dirname(stateBackup), { recursive: true });
   fs.copyFileSync(location, stateBackup);
@@ -2759,6 +3169,12 @@ function baseline(flags: Flags): void {
     owner: required(flags, "owner"),
     reason,
     reducer_version: REDUCER_VERSION,
+    // Who, with what, and over what: the four facts a reader needs to judge a
+    // boundary somebody else drew.
+    engine_version: VERSION,
+    writer: "plangonaut-cli",
+    defect_category: diagnosis.defect?.category ?? null,
+    defect_line: diagnosis.defect?.line ?? null,
     baseline_state_sha256: previousDigest,
     events_before: lines.length,
     unreproducible_before_revision: Number(state.revision) - 1,
@@ -2770,6 +3186,21 @@ function baseline(flags: Flags): void {
   console.log(`Recorded a replay baseline at revision ${state.revision}.`);
   console.log(`Everything from here on can be rebuilt from the events. The ${lines.length} event${lines.length === 1 ? "" : "s"} before it stay in the file and stay outside that proof: they were written without the information a replay needs, and none of it has been invented.`);
   console.log(`The previous state and history are preserved at ${event.state_backup} and ${event.events_backup ?? "<no history file>"}.`);
+  console.log(``);
+  console.log(`The boundary of the proof, stated so it is not mistaken later:`);
+  console.log(`- events 1-${lines.length} are readable and unproven. This baseline is not retroactive evidence that what they record happened.`);
+  console.log(`- everything from revision ${state.revision} onward replays and is verifiable with plangonaut replay --verify --project-root .`);
+}
+
+/**
+ * A confirmation that belongs to one project at one revision.
+ *
+ * Short on purpose — it is typed by a person — and derived from the things that
+ * would make the preview stale: which project, which revision, and what its
+ * state actually is.
+ */
+function baselineToken(root: string, state: State): string {
+  return sha256(`baseline|${canonicalRelative(root)}|${state.revision}|${digestOf(state)}`).slice(0, 12);
 }
 
 /**
@@ -5346,6 +5777,18 @@ function handoffCheck(flags: Flags): void {
   const advisory: string[] = [];
 
   // 1. The record itself has to hold before anything else is worth saying.
+  //
+  // Including the history: a folder whose events do not reproduce its state is
+  // not handed over, and the full diagnosis is printed rather than a sentence,
+  // because the person reading it is the one who has to act on it.
+  const diagnosis = integrityDiagnosis(root);
+  if (!diagnosis.sound && diagnosis.defect) {
+    blocking.push(
+      `mechanical integrity has failed: ${diagnosis.defect.category}` +
+      `${diagnosis.defect.line > 0 ? ` at event line ${diagnosis.defect.line}` : ""}. ` +
+      `plangonaut replay --verify --project-root . prints the whole diagnosis. No decision can waive this.`
+    );
+  }
   blocking.push(...stateErrors(root, state));
   blocking.push(...documentIntegrityErrors(root, state));
   blocking.push(...recordedDigestErrors(root, state));
@@ -5395,7 +5838,7 @@ function handoffCheck(flags: Flags): void {
    * It is skipped entirely when the project has declared that it is not to be
    * built. A feasibility study with no integration plan is not defective.
    */
-  const readiness = readinessReport(state);
+  const readiness = readinessReport(state, root);
   if (readiness.intent === "YES") {
     for (const finding of readiness.execution.findings) blocking.push(finding);
   } else if (readiness.intent === "UNDECLARED") {
@@ -6679,7 +7122,7 @@ function readStandings(root: string, state: State): { record: ReadRecord; standi
 function executionReadinessCommand(flags: Flags): void {
   const root = resolveProject(required(flags, "project-root"));
   const state = validateRoot(root);
-  const report = readinessReport(state);
+  const report = readinessReport(state, root);
 
   if (flags.json === true) {
     console.log(JSON.stringify({
@@ -6704,6 +7147,243 @@ function executionReadinessCommand(flags: Flags): void {
   if (report.execution.verdict === "FAILED") {
     reportedExitCode = 2;
   }
+}
+
+// ---------------------------------------------------------------------------
+// What a writer can do, and what a project needs from one
+// ---------------------------------------------------------------------------
+
+/*
+ * A version number is not a capability.
+ *
+ * Studio 0.3.0-alpha.4 wrote a `DOCUMENT_SAVED` event into a project the
+ * alpha.5 CLI governs. The event carried an id, a type, a revision and a
+ * timestamp, and none of `format`, `state_patch`, `previous_state_sha256`,
+ * `state_sha256`, `previous_event_sha256` or `payload_sha256`. It was a
+ * perfectly good event in the format its writer knew, appended to a history
+ * that had moved on, and nothing anywhere compared the two.
+ *
+ * Comparing the version numbers would not have helped either. `alpha.4 < alpha.5`
+ * says nothing about whether the older writer produces events the newer reader
+ * can replay — it might, for a release that changed nothing about the format,
+ * and it might not, for a patch release that changed everything. What decides it
+ * is what each side can actually do, so each side says so.
+ */
+
+/** The event shapes this engine can read. Historical formats stay readable. */
+const READABLE_EVENT_FORMATS = [1, 2];
+
+/**
+ * The digest and patch fields a format-2 event carries.
+ *
+ * Listed here rather than inferred from a sample, because the failure this
+ * closes is a writer producing an event that *looks* complete. A reader that
+ * derives the required set from whatever it happens to be holding cannot
+ * detect the absence of a field nothing in front of it has.
+ */
+const FORMAT_2_REQUIRED = [
+  "format",
+  "state_patch",
+  "previous_revision",
+  "previous_state_sha256",
+  "state_sha256",
+  "previous_event_sha256",
+  "payload_sha256",
+];
+
+interface WriterCapabilities {
+  /** What this engine is. */
+  engine: string;
+  version: string;
+  schema_version: number;
+  /** Event formats it can read. */
+  reads_event_formats: number[];
+  /** The single format it writes. A writer that writes two is a writer nobody can predict. */
+  writes_event_format: number;
+  /** Whether it can rebuild a state from its history. */
+  replay: boolean;
+  /** Governed mutations it implements. */
+  governed_operations: string[];
+}
+
+function writerCapabilities(): WriterCapabilities {
+  return {
+    engine: "plangonaut-cli",
+    version: VERSION,
+    schema_version: SCHEMA_VERSION,
+    reads_event_formats: READABLE_EVENT_FORMATS,
+    writes_event_format: EVENT_FORMAT,
+    replay: true,
+    governed_operations: ["doc-save", "doc-finalize", "doc-restore", "doc-mark-deletion"],
+  };
+}
+
+interface ProjectRequirements {
+  schema_version: number;
+  /** The highest event format found in this project's history. */
+  event_format: number;
+  /** Every format present, because a mixed history is a fact worth stating. */
+  event_formats_present: number[];
+  /** The engine that wrote the last event, when it recorded one. */
+  last_engine_version: string | null;
+  /** The minimum a writer must produce to append to this history without breaking it. */
+  minimum_writer_event_format: number;
+  /** Events whose shape their own declared format does not satisfy. */
+  malformed_events: number;
+}
+
+/**
+ * What a project needs from anything that writes to it.
+ *
+ * Derived from the history rather than from the state, because the history is
+ * what a new event has to be consistent with. A project whose last event is
+ * format 2 cannot accept a format-1 event: the chain would break at that line
+ * and every later event would be unverifiable.
+ */
+function projectRequirements(root: string): ProjectRequirements {
+  const events = readEvents(root);
+  const formats = new Set<number>();
+  let malformed = 0;
+  /*
+   * A format that goes backwards is the defect, not a format that is old.
+   *
+   * A history entirely in format 1 is a project from before the format existed,
+   * and is fine. A format-1 event *after* a format-2 one is a second writer
+   * that did not know: the line is readable and records no mutation, so
+   * everything from there on stops being replayable. Tracking the highest
+   * format seen so far is what tells those two apart.
+   */
+  let highestSoFar = 0;
+  for (const event of events) {
+    const format = Number(event?.format ?? 1);
+    formats.add(format);
+    if (format >= 2) {
+      const missing = FORMAT_2_REQUIRED.filter((field) => event?.[field] === undefined);
+      if (missing.length) malformed += 1;
+    } else if (format < highestSoFar) {
+      malformed += 1;
+    }
+    if (format > highestSoFar) highestSoFar = format;
+  }
+  const present = [...formats].sort((a, b) => a - b);
+  const highest = present.length ? present[present.length - 1] : EVENT_FORMAT;
+  const { state } = (() => {
+    try {
+      return loadState(root);
+    } catch {
+      return { state: null as any };
+    }
+  })();
+  return {
+    schema_version: Number(state?.schema_version ?? SCHEMA_VERSION),
+    event_format: highest,
+    event_formats_present: present,
+    last_engine_version: nonEmpty(state?.last_engine_version) ? String(state.last_engine_version) : null,
+    minimum_writer_event_format: highest,
+    malformed_events: malformed,
+  };
+}
+
+export interface CompatibilityVerdict {
+  compatible: boolean;
+  /** Why not, in the order found. */
+  reasons: string[];
+  /** What the caller should do instead. */
+  remedy: string[];
+}
+
+/**
+ * May this writer append a governed event to this project?
+ *
+ * The one question Studio never asked. It is answered before a byte is
+ * written, and it is answered from capabilities on both sides rather than from
+ * a comparison of version strings.
+ */
+function writerMayWrite(requirements: ProjectRequirements, writer: WriterCapabilities): CompatibilityVerdict {
+  const reasons: string[] = [];
+  const remedy: string[] = [];
+
+  if (writer.schema_version !== requirements.schema_version) {
+    reasons.push(
+      `the project is schema ${requirements.schema_version} and this writer speaks schema ${writer.schema_version}.`
+    );
+  }
+  if (writer.writes_event_format < requirements.minimum_writer_event_format) {
+    reasons.push(
+      `the project's history is at event format ${requirements.minimum_writer_event_format} and this writer produces format ${writer.writes_event_format}. ` +
+      `An event in the older shape appended here breaks the digest chain at that line, and every event after it becomes unverifiable.`
+    );
+    remedy.push(`Use a writer that produces event format ${requirements.minimum_writer_event_format} or later.`);
+  }
+  if (!requirements.event_formats_present.every((format) => writer.reads_event_formats.includes(format))) {
+    const unreadable = requirements.event_formats_present.filter((format) => !writer.reads_event_formats.includes(format));
+    reasons.push(`the history contains event format ${unreadable.join(", ")}, which this writer cannot read.`);
+  }
+  if (requirements.malformed_events > 0) {
+    reasons.push(
+      `${requirements.malformed_events} event${requirements.malformed_events === 1 ? "" : "s"} in this history declare${requirements.malformed_events === 1 ? "s" : ""} a format whose required fields ${requirements.malformed_events === 1 ? "it does" : "they do"} not carry. ` +
+      `Writing on top of that would add a verifiable event to an unverifiable history.`
+    );
+    remedy.push(`plangonaut replay --verify --project-root . says which, and plangonaut baseline is how a history is made verifiable again from a declared point.`);
+  }
+
+  return { compatible: reasons.length === 0, reasons, remedy };
+}
+
+/**
+ * `compat-check` — may this writer write here, and if not, why?
+ *
+ * A command rather than a library call, because the caller that needs it most
+ * is a different process in a different language, and a process boundary is the
+ * only place the answer cannot drift from the engine that enforces it.
+ */
+function compatCheck(flags: Flags): void {
+  const root = resolveProject(required(flags, "project-root"));
+  const requirements = projectRequirements(root);
+  const writer = writerCapabilities();
+
+  /*
+   * A caller may ask on behalf of another writer.
+   *
+   * Studio asks "may *I* write here", and it is not this engine. It passes what
+   * it can do and gets an answer about itself rather than about the CLI that
+   * happens to be answering.
+   */
+  const asked: WriterCapabilities = {
+    ...writer,
+    ...(flags["writer-engine"] ? { engine: String(flags["writer-engine"]) } : {}),
+    ...(flags["writer-version"] ? { version: String(flags["writer-version"]) } : {}),
+    ...(flags["writer-schema"] ? { schema_version: Number(flags["writer-schema"]) } : {}),
+    ...(flags["writer-event-format"] ? { writes_event_format: Number(flags["writer-event-format"]) } : {}),
+    ...(flags["writer-reads-formats"]
+      ? { reads_event_formats: String(flags["writer-reads-formats"]).split(",").map((item) => Number(item.trim())).filter((item) => Number.isFinite(item)) }
+      : {}),
+  };
+
+  const verdict = writerMayWrite(requirements, asked);
+
+  if (flags.json === true) {
+    console.log(JSON.stringify({ project: requirements, writer: asked, verdict }, null, 2));
+    if (!verdict.compatible) reportedExitCode = 2;
+    return;
+  }
+
+  console.log(`Project: schema ${requirements.schema_version}, event format ${requirements.event_format}` +
+    `${requirements.event_formats_present.length > 1 ? ` (history contains ${requirements.event_formats_present.join(", ")})` : ""}` +
+    `${requirements.last_engine_version ? `, last written by ${requirements.last_engine_version}` : ", last writing engine not recorded"}.`);
+  console.log(`Writer:  ${asked.engine} ${asked.version}, schema ${asked.schema_version}, writes event format ${asked.writes_event_format}, reads ${asked.reads_event_formats.join(", ")}.`);
+  console.log("");
+  if (verdict.compatible) {
+    console.log(`Compatible: this writer may append governed events to this project.`);
+    return;
+  }
+  console.log(`Incompatible. Governed writing is refused:`);
+  for (const reason of verdict.reasons) console.log(`- ${reason}`);
+  if (verdict.remedy.length) {
+    console.log(`\n${verdict.remedy.join("\n")}`);
+  }
+  console.log(`\nReading is unaffected. Nothing was written.`);
+  reportedExitCode = 2;
 }
 
 function status(flags: Flags): void {
@@ -6757,7 +7437,7 @@ function status(flags: Flags): void {
  * carrying a claim about itself that nothing had rechecked.
  */
 function statusReadiness(root: string, state: State): Record<string, unknown> {
-  const report = readinessReport(state);
+  const report = readinessReport(state, root);
   const reads = readStandings(root, state);
   return {
     execution_intent: report.intent === "UNDECLARED" ? "NOT DECLARED" : report.intent === "NO" ? "DEFINITION_ONLY" : "EXECUTION",
@@ -7227,7 +7907,7 @@ function next(flags: Flags): void {
    * needs to know that the review would be approving a blueprint with no plan
    * under it.
    */
-  const readiness = readinessReport(state);
+  const readiness = readinessReport(state, root);
   const operational = operationalRedirect(state, readiness);
   if (operational.length) lines.unshift(...operational, "");
 
@@ -7815,10 +8495,34 @@ interface ReadinessReport {
   intent: "YES" | "NO" | "UNDECLARED";
 }
 
-function readinessReport(state: State): ReadinessReport {
+function readinessReport(state: State, root?: string): ReadinessReport {
+  const execution = executionReadiness(state);
+  /*
+   * Integrity first, and above everything a decision can reach.
+   *
+   * A project whose history does not reproduce its state cannot be executed,
+   * whatever its plan looks like: every requirement, task and responsibility in
+   * it is recorded in a file that nothing can vouch for. So the mechanical
+   * failure is prepended to the execution findings rather than reported beside
+   * them, and it is prepended even when the plan is otherwise perfect.
+   *
+   * `root` is optional only because several call sites have a state and no path.
+   * Where it is known, this runs.
+   */
+  if (root !== undefined) {
+    const diagnosis = integrityDiagnosis(root);
+    if (!diagnosis.sound && diagnosis.defect) {
+      const defect = diagnosis.defect;
+      execution.findings.unshift(
+        `mechanical integrity has failed (${defect.category}${defect.line > 0 ? `, line ${defect.line}` : ""}), so nothing recorded in this project can be relied on. ` +
+        `This is not a priority call and no decision can waive it.`
+      );
+      execution.verdict = execution.verdict === "NOT REQUESTED" ? "NOT REQUESTED" : "FAILED";
+    }
+  }
   return {
     definition: definitionReadiness(state),
-    execution: executionReadiness(state),
+    execution,
     intent: executionRequested(state),
   };
 }
@@ -9408,7 +10112,7 @@ function resumeFrontier(state: any): string[] {
  * from "this was read, and here is the proof".
  */
 function resumeReadinessLines(root: string, state: State): string[] {
-  const readiness = readinessReport(state);
+  const readiness = readinessReport(state, root);
   const lines = [``, `## Completeness`, ``, ...readinessLines(readiness, "NOT ASSESSED").slice(0, 2)];
   if (readiness.intent === "NO") {
     lines.push(``, `Definition complete.`, `Execution readiness not requested.`, `This folder is not an execution package.`);
@@ -12420,7 +13124,7 @@ function help(): void {
   qa-close --project-root . --id QNA-0001 --kind deferred|skipped|invalidated --reason TEXT --owner NAME
   qa-supersede --project-root . --id QNA-0001 --new-id QNA-0009 --question TEXT --rationale TEXT --reason TEXT --owner NAME
   qa-log --project-root . [--open] [--last] [--json] [--id QNA-0001] [--regenerate]
-  context-pack --project-root . [--output session.md]\n  validate --project-root . [--strict]\n  govern --project-root . --exclude docs/appunti.md --reason TEXT --owner NAME\n  govern --project-root . --include docs/appunti.md --owner NAME\n  migrate --project-root .\n  migrate-backups --project-root . [--apply]        (move a pre-0.3.0-alpha.5 backups/ directory under the ledger)\n  migrate-brand --project-root . --dry-run                   (what a brand migration would do; writes nothing)\n  migrate-brand --project-root .                             (.beave -> .plangonaut, verified backup and receipt)\n  migrate-brand --project-root . --resume                    (finish one that was interrupted)\n  migrate-brand --project-root . --rollback MIG-ID           (undo one, verifying receipt and backup)\n  migrate-brand --project-root . --rollback MIG-ID --discard-changes  (and throw away what was recorded since)\n  replay --project-root . [--verify]                     (rebuild the state from the events and compare)\n  replay --project-root . --repair --operation-id OP-ID  (put the rebuilt state back, keeping a backup)\n  baseline --project-root . --reason TEXT --owner NAME --operation-id OP-ID\n  recover --project-root . [--apply]                     (interrupted operations: what they are, and finish them)\n  unlock --project-root . [--force]                      (who holds the project lock, and release an abandoned one)\n  project-export --project-root . --output-dir DIR\n  project-verify --package-dir DIR\n  handoff-check --project-root . [--json]                (is this folder enough for somebody who was not here?)\n  execution-readiness --project-root . [--json]          (is the work executable, or only defined?)\n  execution-intent --project-root . --execution|--definition-only --reason TEXT --owner NAME --operation-id ID\n  execution-org --project-root . --executors N --mode TEXT --reviewer NAME --concurrency TEXT --handoff TEXT [--integrator NAME] --owner NAME --operation-id ID\n  read-record --project-root . --path FILE --purpose TEXT [--agent NAME] [--conclusions TEXT] [--used-by IDS] --owner NAME --operation-id ID\n  project-import --package-dir DIR --project-root NEW_DIR\n  export --target portable|codex|claude|gemini|agy --output-dir DIR\n  install --target codex|claude|gemini|agy|all [--scope project|workspace|user] [--project-root DIR] [--dry-run]\n  verify-install --target codex|claude|gemini|agy [--scope project|workspace|user] [--project-root DIR]\n  version`);
+  context-pack --project-root . [--output session.md]\n  validate --project-root . [--strict]\n  govern --project-root . --exclude docs/appunti.md --reason TEXT --owner NAME\n  govern --project-root . --include docs/appunti.md --owner NAME\n  migrate --project-root .\n  migrate-backups --project-root . [--apply]        (move a pre-0.3.0-alpha.5 backups/ directory under the ledger)\n  migrate-brand --project-root . --dry-run                   (what a brand migration would do; writes nothing)\n  migrate-brand --project-root .                             (.beave -> .plangonaut, verified backup and receipt)\n  migrate-brand --project-root . --resume                    (finish one that was interrupted)\n  migrate-brand --project-root . --rollback MIG-ID           (undo one, verifying receipt and backup)\n  migrate-brand --project-root . --rollback MIG-ID --discard-changes  (and throw away what was recorded since)\n  replay --project-root . [--verify]                     (rebuild the state from the events and compare)\n  replay --project-root . --repair --operation-id OP-ID  (put the rebuilt state back, keeping a backup)\n  baseline --project-root . --reason TEXT --owner NAME --operation-id OP-ID\n  recover --project-root . [--apply]                     (interrupted operations: what they are, and finish them)\n  unlock --project-root . [--force]                      (who holds the project lock, and release an abandoned one)\n  project-export --project-root . --output-dir DIR\n  project-verify --package-dir DIR\n  handoff-check --project-root . [--json]                (is this folder enough for somebody who was not here?)\n  execution-readiness --project-root . [--json]          (is the work executable, or only defined?)\n  compat-check --project-root . [--json] [--writer-engine NAME --writer-version V --writer-schema N --writer-event-format N --writer-reads-formats 1,2]\n  execution-intent --project-root . --execution|--definition-only --reason TEXT --owner NAME --operation-id ID\n  execution-org --project-root . --executors N --mode TEXT --reviewer NAME --concurrency TEXT --handoff TEXT [--integrator NAME] --owner NAME --operation-id ID\n  read-record --project-root . --path FILE --purpose TEXT [--agent NAME] [--conclusions TEXT] [--used-by IDS] --owner NAME --operation-id ID\n  project-import --package-dir DIR --project-root NEW_DIR\n  export --target portable|codex|claude|gemini|agy --output-dir DIR\n  install --target codex|claude|gemini|agy|all [--scope project|workspace|user] [--project-root DIR] [--dry-run]\n  verify-install --target codex|claude|gemini|agy [--scope project|workspace|user] [--project-root DIR]\n  version`);
 }
 
 /**
@@ -13237,7 +13941,7 @@ export async function main(argv: string[]): Promise<number> {
        * too — and only when execution was actually requested, because a
        * feasibility study passing `--strict` is correct.
        */
-      const strictReadiness = readinessReport(state);
+      const strictReadiness = readinessReport(state, root);
       const strictExecution = strictReadiness.intent === "YES" && strictReadiness.execution.verdict === "FAILED"
         ? strictReadiness.execution.findings
         : [];
@@ -13258,7 +13962,7 @@ export async function main(argv: string[]): Promise<number> {
        * the project can be executed. Both are printed, because the pilot's
        * folder was valid on every run it ever had.
        */
-      const readiness = readinessReport(state);
+      const readiness = readinessReport(state, root);
       console.log(`\n${readinessLines(readiness, "NOT ASSESSED").slice(0, 2).join("\n")}`);
       if (readiness.execution.verdict === "FAILED") {
         console.log(`\nExecution readiness fails on ${readiness.execution.findings.length} thing${readiness.execution.findings.length === 1 ? "" : "s"}:`);
@@ -13299,6 +14003,7 @@ export async function main(argv: string[]): Promise<number> {
     else if (command === "migrate-backups") migrateBackups(flags);
     else if (command === "handoff-check") handoffCheck(flags);
     else if (command === "execution-readiness") executionReadinessCommand(flags);
+    else if (command === "compat-check") compatCheck(flags);
     else if (command === "execution-intent") executionIntent(flags);
     else if (command === "execution-org") executionOrg(flags);
     else if (command === "read-record") readRecord(flags);
