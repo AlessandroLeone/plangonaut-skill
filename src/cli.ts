@@ -13535,6 +13535,79 @@ const DOCUMENT_FLOW = [
  * the general help rather than printing an empty page.
  */
 const COMMAND_HELP: Record<string, string> = {
+  ...(() => {
+    /*
+     * One explanation, reachable from any of the five.
+     *
+     * The family was added with usage lines in the general help and nothing
+     * else, and the general help cannot carry six paragraphs about one
+     * mechanism without becoming unreadable. A reader who types
+     * `doc-lock-force-release --help` is about to take a document away from a
+     * colleague; that is the moment to explain what they are doing, not a
+     * moment to print an argument list.
+     */
+    const text = [
+      `plangonaut doc-lock — who is editing a governed document, and how that ends.`,
+      ``,
+      `  doc-lock               --project-root DIR [--id ART-<NAME>] [--json]`,
+      `  doc-lock-acquire       --project-root DIR --id ART-<NAME> --owner NAME --session S`,
+      `                         [--pid N] --operation-id ID`,
+      `  doc-lock-release       --project-root DIR --id ART-<NAME> --owner NAME --operation-id ID`,
+      `  doc-lock-recover       --project-root DIR --id ART-<NAME> --owner NAME --operation-id ID`,
+      `  doc-lock-force-release --project-root DIR --id ART-<NAME> --owner NAME --reason TEXT`,
+      `                         --operation-id ID`,
+      ``,
+      `THIS IS NOT \`plangonaut unlock\`.`,
+      `  unlock releases the *project* lock in ${STATE_DIR}/lock.json: one file, one`,
+      `  process, held for the length of a single command, about two writers touching`,
+      `  the same folder at once. This is one document and one editing session, it`,
+      `  lives inside the state as a field of the artifact, and it survives across`,
+      `  commands on purpose. Reaching for unlock will not release a document.`,
+      ``,
+      `WHO MAY RELEASE IT`,
+      `  The owner holding it, with doc-lock-release. Nobody else, and never`,
+      `  silently: a second owner taking a lock behind somebody's back is how two`,
+      `  people come to believe they each have a document open. The other two roads`,
+      `  out both record an event saying what they did and why.`,
+      ``,
+      `HOW "OBSOLETE" IS ESTABLISHED`,
+      `  Only one way: the lock names this machine and a process that is no longer`,
+      `  running. That is what doc-lock-recover accepts and nothing else. A lock`,
+      `  from another host is never judged from here, because this machine cannot`,
+      `  see whether that session is alive. A legacy lock — a bare owner name with`,
+      `  no session, host, process or time, written by a version that set the name`,
+      `  and never cleared it — carries no evidence at all, so it is reported as`,
+      `  LEGACY_UNKNOWN and is neither assumed live nor assumed dead.`,
+      ``,
+      `AFTER A CRASH`,
+      `  Run doc-lock to see the state. A session that died on this machine reads`,
+      `  STALE, and doc-lock-recover clears it. Anything else needs`,
+      `  doc-lock-force-release and a reason, which is a decision rather than a`,
+      `  recovery and is recorded as one.`,
+      ``,
+      `WHAT GETS RECORDED`,
+      `  DOCUMENT_LOCK_ACQUIRED, _RELEASED, _RECOVERED and _FORCE_RELEASED. Each`,
+      `  carries the previous holder, session, host and process, because once the`,
+      `  field is cleared the event is the only place a reader can learn who held`,
+      `  it. doc-finalize also releases the session it was holding, and records`,
+      `  that on its own event.`,
+      ``,
+      `CLOSING AN OLD APPLICATION DOES NOT RELEASE ANYTHING`,
+      `  A build that predates this protocol never releases a document lock: it has`,
+      `  no code path that clears the field. Closing a tab, closing the window or`,
+      `  restarting the machine will not help, and advice to try is advice that`,
+      `  cannot work. Use these commands instead.`,
+      ``,
+      `Reading is free: doc-lock writes nothing and records no event.`,
+    ].join("\n");
+    return {
+      "doc-lock": text,
+      "doc-lock-acquire": text,
+      "doc-lock-release": text,
+      "doc-lock-recover": text,
+      "doc-lock-force-release": text,
+    };
+  })(),
   "doc-diff": [
     `plangonaut doc-diff — preview a governed document change. Writes nothing.`,
     ``,
