@@ -778,10 +778,10 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   // The *document* lock. The project lock is `unlock`, and the two are kept
   // apart by name so nobody reaches for the wrong one in a hurry.
   "doc-lock": ["project-root", "id", "session", "json"],
-  "doc-lock-acquire": ["project-root", "id", "owner", "session", "pid", "operation-id"],
-  "doc-lock-release": ["project-root", "id", "owner", "operation-id"],
-  "doc-lock-recover": ["project-root", "id", "owner", "operation-id"],
-  "doc-lock-force-release": ["project-root", "id", "owner", "reason", "operation-id"],
+  "doc-lock-acquire": ["project-root", "id", "owner", "session", "pid", "json", "operation-id"],
+  "doc-lock-release": ["project-root", "id", "owner", "json", "operation-id"],
+  "doc-lock-recover": ["project-root", "id", "owner", "json", "operation-id"],
+  "doc-lock-force-release": ["project-root", "id", "owner", "reason", "json", "operation-id"],
   // The three states of completeness, and the two things a project records
   // about how it will be executed.
   "execution-readiness": ["project-root", "json"],
@@ -852,11 +852,11 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   // passes the pair to both should not be refused by the half that writes
   // nothing.
   "doc-diff": ["project-root", "id", "base-path", "content-file", "owner", "sources", "confirm-token", "expected-revision", "expected-hash", "session", "pid"],
-  "doc-mark-deletion": ["project-root", "id", "target", "reason-file", "content-file", "owner", "expected-revision", "expected-hash", "operation-id"],
+  "doc-mark-deletion": ["project-root", "id", "target", "reason-file", "content-file", "owner", "expected-revision", "expected-hash", "json", "operation-id"],
   "doc-save": ["project-root", "id", "base-path", "content-file", "owner", "sources", "confirm-token", "expected-revision", "expected-hash", "session", "pid", "operation-id"],
   "doc-history": ["project-root", "id"],
-  "doc-restore": ["project-root", "id", "revision", "owner", "expected-revision", "expected-hash", "operation-id"],
-  "doc-finalize": ["project-root", "id", "owner", "accept-base-overwrite", "expected-revision", "expected-hash", "operation-id"],
+  "doc-restore": ["project-root", "id", "revision", "owner", "expected-revision", "expected-hash", "json", "operation-id"],
+  "doc-finalize": ["project-root", "id", "owner", "accept-base-overwrite", "expected-revision", "expected-hash", "json", "operation-id"],
   "context-pack": ["project-root", "output"],
   "project-export": ["project-root", "output-dir"],
   "project-verify": ["package-dir"],
@@ -12918,6 +12918,26 @@ function sessionPid(flags: Flags): number | null {
   return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
 }
 
+/**
+ * The same result, said twice: once for a person and once for a program.
+ *
+ * A delegating writer must not read prose. `Finalized document ART-1 to
+ * docs/spec.md` is a sentence written for somebody who already knows what they
+ * asked for, and a caller that parses it is a caller that breaks the first time
+ * the wording improves — which is a reason never to improve it.
+ *
+ * So every governed command that a writer drives can be asked for JSON, the
+ * prose stays exactly as it was for everybody else, and nothing has to choose
+ * between being readable and being usable.
+ */
+function say(flags: Flags, human: string, machine: Record<string, unknown>): void {
+  if (flags.json === true) {
+    console.log(JSON.stringify(machine, null, 2));
+    return;
+  }
+  console.log(human);
+}
+
 function docLockStatus(flags: Flags): void {
   const root = resolveProject(required(flags, "project-root"));
   const state = validateRoot(root);
@@ -13066,8 +13086,12 @@ function docLockAcquire(flags: Flags): void {
     idempotentMessage: `Idempotent retry: ${id} is already held by this session.`,
     settled: (current) => current.state === "MINE",
   });
-  console.log(`${id} is now held by ${owner}, session ${session}, on ${os.hostname()}.`);
-  console.log(`Release it when the editing session ends: plangonaut doc-lock-release --project-root . --id ${id} --owner ${owner} --operation-id <id>`);
+  say(
+    flags,
+    `${id} is now held by ${owner}, session ${session}, on ${os.hostname()}.\n` +
+      `Release it when the editing session ends: plangonaut doc-lock-release --project-root . --id ${id} --owner ${owner} --operation-id <id>`,
+    { result: "acquired", artifact: id, owner, session, host: os.hostname(), pid: sessionPid(flags) },
+  );
 }
 
 function docLockRelease(flags: Flags): void {
@@ -13105,7 +13129,7 @@ function docLockRelease(flags: Flags): void {
     idempotentMessage: `Idempotent retry: ${id} is already released.`,
     settled: (current) => current.state === "FREE",
   });
-  console.log(`${id} is released. ${owner} no longer holds it.`);
+  say(flags, `${id} is released. ${owner} no longer holds it.`, { result: "released", artifact: id, owner, previous_owner: reading.owner, previous_session: reading.session });
 }
 
 function docLockRecover(flags: Flags): void {
@@ -13145,8 +13169,12 @@ function docLockRecover(flags: Flags): void {
     idempotentMessage: `Idempotent retry: ${id} was already recovered.`,
     settled: (current) => current.state === "FREE",
   });
-  console.log(`${id} is recovered. ${reading.owner} held it in process ${reading.pid} on ${reading.host}, which has ended.`);
-  console.log(`The document is now free. ${owner} may take it with plangonaut doc-lock-acquire, or finalize it directly.`);
+  say(
+    flags,
+    `${id} is recovered. ${reading.owner} held it in process ${reading.pid} on ${reading.host}, which has ended.\n` +
+      `The document is now free. ${owner} may take it with plangonaut doc-lock-acquire, or finalize it directly.`,
+    { result: "recovered", artifact: id, owner, previous_owner: reading.owner, previous_session: reading.session, previous_host: reading.host, previous_pid: reading.pid },
+  );
 }
 
 function docLockForceRelease(flags: Flags): void {
@@ -13161,6 +13189,15 @@ function docLockForceRelease(flags: Flags): void {
 
   if (reading.state === "FREE") return console.log(`${id} is not locked.`);
 
+  /*
+   * The dossier is for a person, so it is silent in JSON mode.
+   *
+   * A writer asking for `--json` and receiving eight lines of prose followed by
+   * an object has been handed something it cannot parse, and the fix would be
+   * for the caller to skip lines until one starts with a brace — which is
+   * parsing prose by another name.
+   */
+  if (flags.json !== true) {
   console.log(`Releasing a lock this engine cannot prove is over.`);
   console.log(`  document   ${id}`);
   console.log(`  held by    ${reading.owner ?? "unknown"}`);
@@ -13171,13 +13208,28 @@ function docLockForceRelease(flags: Flags): void {
   console.log(`  state      ${reading.state}`);
   console.log(`  reason     ${reason}`);
   console.log(``);
+  }
 
   commitLockChange(root, flags, {
     id, owner, type: "DOCUMENT_LOCK_FORCE_RELEASED", previous: reading, next: null, reason,
     idempotentMessage: `Idempotent retry: ${id} was already force-released.`,
     settled: (current) => current.state === "FREE",
   });
-  console.log(`${id} is released by ${owner}. The previous holder is recorded in the event, not lost.`);
+  say(
+    flags,
+    `${id} is released by ${owner}. The previous holder is recorded in the event, not lost.`,
+    {
+      result: "force-released",
+      artifact: id,
+      owner,
+      reason,
+      previous_state: reading.state,
+      previous_owner: reading.owner,
+      previous_session: reading.session,
+      previous_host: reading.host,
+      previous_pid: reading.pid,
+    },
+  );
   if (reading.state === "LEGACY_UNKNOWN") {
     console.log(`If ${reading.owner} was in fact still editing, their unsaved work is in their editor and not in this project. Nothing here was overwritten.`);
   }
@@ -13267,7 +13319,19 @@ function docRestore(flags: Flags): void {
     if (fs.existsSync(transaction)) rollbackFileTransaction(root, transaction);
     throw error;
   }
-  console.log(`Restored document ${id} to ${newWorkingPath} (from revision ${restoreRevision} as new revision ${newRevision})`);
+  say(
+    flags,
+    `Restored document ${id} to ${newWorkingPath} (from revision ${restoreRevision} as new revision ${newRevision})`,
+    {
+      result: "restored",
+      artifact_id: id,
+      working_path: newWorkingPath,
+      revision: newRevision,
+      restored_from_revision: restoreRevision,
+      content_hash: artifact.content_hash,
+      status: artifact.status,
+    },
+  );
 }
 
 function docFinalize(flags: Flags): void {
@@ -13375,7 +13439,16 @@ function docFinalize(flags: Flags): void {
     throw error;
   }
   if (supersededPath) console.log(`Archived the unrecorded content of ${artifact.base_path} to ${supersededPath}`);
-  console.log(`Finalized document ${id} to ${artifact.base_path}`);
+  say(flags, `Finalized document ${id} to ${artifact.base_path}`, {
+    result: "finalized",
+    artifact_id: id,
+    base_path: artifact.base_path,
+    working_path: artifact.working_path,
+    revision: artifact.revision,
+    content_hash: artifact.content_hash,
+    status: artifact.status,
+    released_lock_owner: releasedLock.state === "FREE" ? null : releasedLock.owner,
+  });
 }
 
 function portableMarkdown(): string {
