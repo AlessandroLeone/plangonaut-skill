@@ -853,7 +853,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   // nothing.
   "doc-diff": ["project-root", "id", "base-path", "content-file", "owner", "sources", "confirm-token", "expected-revision", "expected-hash", "session", "pid"],
   "doc-mark-deletion": ["project-root", "id", "target", "reason-file", "content-file", "owner", "expected-revision", "expected-hash", "json", "operation-id"],
-  "doc-save": ["project-root", "id", "base-path", "content-file", "owner", "sources", "confirm-token", "expected-revision", "expected-hash", "session", "pid", "operation-id"],
+  "doc-save": ["project-root", "id", "base-path", "content-file", "owner", "sources", "confirm-token", "expected-revision", "expected-hash", "session", "pid", "json", "operation-id"],
   "doc-history": ["project-root", "id"],
   "doc-restore": ["project-root", "id", "revision", "owner", "expected-revision", "expected-hash", "json", "operation-id"],
   "doc-finalize": ["project-root", "id", "owner", "accept-base-overwrite", "expected-revision", "expected-hash", "json", "operation-id"],
@@ -12549,7 +12549,21 @@ function docMarkDeletion(flags: Flags): void {
 function docSave(flags: Flags): void {
   const root = resolveProject(required(flags, "project-root"));
   const key = idempotencyKey(flags);
-  if (checkIdempotency(root, key)) return console.log(`Idempotent retry: doc-save already applied.`);
+  if (checkIdempotency(root, key)) {
+    /*
+     * A retry answers in the same language as the first attempt.
+     *
+     * Everything else `doc-save` prints is JSON, and a delegating writer parses
+     * it. One prose line on the idempotent path meant a retry — the ordinary
+     * consequence of a lost reply — came back unparseable, and a caller that
+     * could not read "this already happened" has to treat a success as a
+     * failure. The flag is accepted rather than needed because the rest of the
+     * output was already machine-readable; it changes this line only.
+     */
+    return say(flags, `Idempotent retry: doc-save already applied.`, {
+      result: "idempotent", command: "doc-save",
+    });
+  }
   const state = validateRoot(root, true);
   const location = path.join(stateRoot(root), "state.json");
   assertNotBlocked(state);
