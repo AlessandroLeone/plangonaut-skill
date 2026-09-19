@@ -20,6 +20,7 @@ Read [references/coverage-contract.md](references/coverage-contract.md) during d
 - Do not confuse a complete blueprint with a completed implementation.
 - **Definition, execution readiness and handoff readiness are three states, not three words for one.** A project can be thoroughly defined and impossible to execute: that is the normal outcome of a good interview that never asked how the work would be done. Report them separately and never let one stand for another.
 - **Never infer "definition only" from the absence of tasks.** A feasibility study and an unfinished project look identical. The user declares it, and it is recorded: `plangonaut execution-intent --project-root . --definition-only --reason "<why>" --owner <owner> --operation-id <id>`.
+- **A mechanical failure cannot be decided away.** A history that does not reproduce its state, an event with no applicable mutation, a broken digest chain, an artifact written outside the flow — none of these is a matter of priority. There is no flag and no decision status that makes one acceptable, and both execution and handoff readiness fail while one stands. Never say you have stopped counting it. See [references/recovery.md](references/recovery.md).
 - **When the goal includes building the thing, the operational interview is not optional.** Modules 14 and 15 must be answered before the final review, and module 16 refuses while execution readiness fails.
 - Evidence precedes every readiness or completion claim.
 - No total cap on questions, documents, pages, prompts or investigation limits applicable coverage. Plan the whole agreed outcome and explicit resolution work for future-dependent detail.
@@ -597,6 +598,12 @@ Whether a project is ready is not a judgement you make in prose:
 carry the same verdict. The criteria are in
 [references/quality-gates.md](references/quality-gates.md) and the required
 information roles in [references/execution-package.md](references/execution-package.md).
+
+**When Studio and the CLI disagree, nothing is written.** A desktop build that
+cannot produce the event format a project's history is at will not write to its
+ledger: the documents stay readable, the governed editor goes read-only, and the
+reason and the remedy are shown. That is a correct state, not a fault. See
+[references/studio-compatibility.md](references/studio-compatibility.md).
 
 **Reading is recorded, not asserted.** When a plan rests on a file you read, record
 it with `plangonaut read-record`: the digest is what makes it evidence. Never claim

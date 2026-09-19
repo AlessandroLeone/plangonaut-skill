@@ -505,7 +505,16 @@ test("every mutating example in the public documentation is complete and runnabl
       // every prose mention of the reading form was reported as an incomplete
       // mutation, which is the check firing on correct documentation.
       const gate = { replay: "repair", recover: "apply", next: "remember" }[command];
-      const mutates = mutating.has(command) && (!gate || used.includes(gate));
+      /*
+       * And the inverse: a command that mutates unless asked to preview.
+       *
+       * `baseline --dry-run` prints what a baseline would prove and writes
+       * nothing, the same way `migrate-brand --dry-run` does. Requiring an
+       * operation id on a preview would demand one for a command that records
+       * nothing, which teaches the opposite of what this check is for.
+       */
+      const previewing = used.includes("dry-run");
+      const mutates = mutating.has(command) && (!gate || used.includes(gate)) && !previewing;
       if (mutates && !used.includes("operation-id")) {
         problems.push(`${relative}: \`plangonaut ${command}\` is a mutating command and the example has no --operation-id`);
       }

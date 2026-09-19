@@ -499,3 +499,57 @@ plangonaut read-record --project-root . --path docs/survey.md --purpose "the bas
 
 `resume` then tells you which files were read and still match, which changed
 after they were read, which are only cited, and where there is no evidence at all.
+
+## When Studio will not let you edit
+
+A project's ledger records every governed change with a digest, and each entry is
+chained to the one before it. Appending an entry in an older shape breaks that
+chain at that line, and everything after it stops being verifiable.
+
+So Studio checks, when it opens a project, whether it can produce the shape that
+project's history is at. When it cannot, governed documents open read-only and
+say so. You can still read them, search them and ask the assistant about them —
+only the governed editor is withheld, and ordinary Markdown stays editable.
+
+Studio shows you both versions and a command you can copy. Running it with the
+CLI that governs the project makes the change properly.
+
+Nothing is written when this happens. No lock is taken, no half-finished entry is
+left behind, and the project is exactly as you found it.
+
+## When a project's history is broken
+
+If a project has been written by two tools that disagree, `plangonaut replay
+--verify --project-root .` will tell you so, and will tell you which line, what
+is missing from it, how much history comes after it, and what is safe to do.
+
+Two things are worth knowing.
+
+**You cannot decide your way past it.** Plangonaut has no setting for accepting a
+broken history, on purpose. A decision can change what your project builds; it
+cannot change whether the record of what happened adds up. Until it is settled,
+the project will not report itself ready to execute or ready to hand over.
+
+**`replay --repair` is usually not the answer.** It rebuilds your state from the
+entries it can read, and when the problem is an entry it *cannot* read, that
+means quietly dropping it and everything after it. It refuses, and tells you how
+much would have gone.
+
+## Recovering with a baseline
+
+A baseline draws a line and says: from here on, this history is provable.
+
+Look at it first:
+
+```
+plangonaut baseline --project-root . --dry-run --reason "Written by two tools" --owner Ada
+```
+
+It tells you how many entries would be left outside the proof and what it is
+stepping over, then gives you a confirmation token. Pass that token to record it.
+Your old history stays in the file and your documents are untouched.
+
+**What a baseline does not do:** it does not make the earlier entries provable and
+it is not evidence that what they say happened. They remain exactly as
+trustworthy as they were. That boundary is printed both times, so it is a
+decision you made rather than something you discover later.
