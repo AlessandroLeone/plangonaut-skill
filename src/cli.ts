@@ -230,7 +230,55 @@ interface Override {
 
 interface Decision { id: string; title: string; status: string; owner: string; revision: number; updated_at: string; }
 interface Requirement { id: string; title: string; status: string; owner: string; revision: number; updated_at: string; }
-interface Artifact { id: string; base_path: string; working_path: string; status: string; revision: number; content_hash: string; lock_owner: string; provenance: string[]; }
+/**
+ * A document lock: a session that is editing, not a name that was here once.
+ *
+ * `lock_owner` was a bare string, set by every write and cleared by nothing.
+ * A real project therefore carried `"studio:Ale92"` for ever: the tab was
+ * closed, the application was closed, the machine was rebooted, and the value
+ * stayed, because no code path in either implementation ever assigned an empty
+ * one. A second author could not finalize the document, and `validate --strict`
+ * passed throughout — correctly, because nothing about it is invalid. It is a
+ * persistent value describing something that was never persistent.
+ *
+ * So the lock records enough to be *checked* rather than merely believed:
+ * which host, which process, which session, and when. A lock whose host is this
+ * one and whose process is gone is demonstrably over. A lock from another host
+ * is not, and is never touched automatically.
+ */
+interface DocumentLock {
+  /** The owner who holds the editing session. */
+  owner: string;
+  /** The editing session or operation this lock belongs to. */
+  session: string;
+  /** The machine that holds it. A lock from elsewhere is never assumed dead. */
+  host: string;
+  /** The process, when the holder could name one. `null` is not a licence. */
+  pid: number | null;
+  acquired_at: string;
+  /** Updated by a renewal, when a holder renews. */
+  renewed_at?: string | null;
+}
+
+interface Artifact {
+  id: string;
+  base_path: string;
+  working_path: string;
+  status: string;
+  revision: number;
+  content_hash: string;
+  /**
+   * The legacy field, kept and still honoured.
+   *
+   * Every project written before this carries it and nothing else, and reading
+   * it as "unlocked" would be the one fix the brief forbids. It stays as the
+   * name of the holder; `lock` carries the evidence when there is any.
+   */
+  lock_owner: string;
+  /** The structured lock. Absent means either unlocked or a legacy lock. */
+  lock?: DocumentLock | null;
+  provenance: string[];
+}
 /**
  * A task, and everything a task needs before somebody who was not here can do it.
  *
@@ -727,6 +775,13 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   validate: ["project-root", "strict"],
   "migrate-backups": ["project-root", "apply"],
   "handoff-check": ["project-root", "json"],
+  // The *document* lock. The project lock is `unlock`, and the two are kept
+  // apart by name so nobody reaches for the wrong one in a hurry.
+  "doc-lock": ["project-root", "id", "session", "json"],
+  "doc-lock-acquire": ["project-root", "id", "owner", "session", "pid", "operation-id"],
+  "doc-lock-release": ["project-root", "id", "owner", "operation-id"],
+  "doc-lock-recover": ["project-root", "id", "owner", "operation-id"],
+  "doc-lock-force-release": ["project-root", "id", "owner", "reason", "operation-id"],
   // The three states of completeness, and the two things a project records
   // about how it will be executed.
   "execution-readiness": ["project-root", "json"],
@@ -794,7 +849,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   // with", and a narrower list would refuse that.
   "doc-diff": ["project-root", "id", "base-path", "content-file", "owner", "sources", "confirm-token", "expected-revision", "expected-hash"],
   "doc-mark-deletion": ["project-root", "id", "target", "reason-file", "content-file", "owner", "expected-revision", "expected-hash", "operation-id"],
-  "doc-save": ["project-root", "id", "base-path", "content-file", "owner", "sources", "confirm-token", "expected-revision", "expected-hash", "operation-id"],
+  "doc-save": ["project-root", "id", "base-path", "content-file", "owner", "sources", "confirm-token", "expected-revision", "expected-hash", "session", "pid", "operation-id"],
   "doc-history": ["project-root", "id"],
   "doc-restore": ["project-root", "id", "revision", "owner", "expected-revision", "expected-hash", "operation-id"],
   "doc-finalize": ["project-root", "id", "owner", "accept-base-overwrite", "expected-revision", "expected-hash", "operation-id"],
@@ -12362,7 +12417,12 @@ function documentPreview(root: string, state: State, flags: Flags): any {
   let current = "";
   if (artifact) {
     if (!sameRecordedPath(artifact.base_path, basePath)) blockers.push(`Artifact ${id} base_path mismatch. Expected ${artifact.base_path}`);
-    if (artifact.lock_owner && artifact.lock_owner !== owner) blockers.push(`Artifact ${id} is locked by ${artifact.lock_owner}`);
+    {
+      const reading = readDocumentLock(artifact, { owner });
+      if (reading.state !== "FREE" && reading.owner !== owner) {
+        blockers.push(`Artifact ${id} is locked by ${reading.owner} (${reading.state}). ${reading.because}`);
+      }
+    }
     try { assertNoExternalEdit(root, artifact); } catch (error: any) { blockers.push(error.message); }
     const currentPath = artifact.working_path && resolveRecorded(root, artifact.working_path);
     if (currentPath && fs.existsSync(currentPath)) current = fs.readFileSync(currentPath, "utf8");
@@ -12425,7 +12485,22 @@ function docMarkDeletion(flags: Flags): void {
   const owner = required(flags, "owner");
   const artifact = state.artifacts.find((item) => item.id === id);
   if (!artifact) throw new PlangonautError(`Artifact ${id} not found.`);
-  if (artifact.lock_owner && artifact.lock_owner !== owner) throw new PlangonautError(`Artifact ${id} is locked by ${artifact.lock_owner}`);
+  {
+    /*
+     * The refusal that stranded a real document.
+     *
+     * It said who held the lock and stopped there, so the reader had nothing to
+     * do next: the holder was a Studio session that had closed weeks earlier
+     * and the suggestion in circulation - reopen Studio, close the document,
+     * quit - could not work, because closing a tab never released anything.
+     * The sentence now says what kind of lock it is, how that was established,
+     * and which of the three roads out applies.
+     */
+    const reading = readDocumentLock(artifact, { owner });
+    if (reading.state !== "FREE" && reading.owner !== owner) {
+      throw new PlangonautError(documentLockRefusal(reading, owner), "PROJECT_STATE_UNTRUSTED");
+    }
+  }
   assertNoExternalEdit(root, artifact);
   const stale = expectedArtifactErrors(flags, artifact);
   if (stale.length) throw new PlangonautError(`Deletion intent refused:\n- ${stale.join("\n- ")}\nNo changes written.`);
@@ -12503,7 +12578,22 @@ function docSave(flags: Flags): void {
   // order in which the user is told what is wrong has changed.
   if (artifact) {
     if (!sameRecordedPath(artifact.base_path, basePath)) throw new PlangonautError(`Artifact ${id} base_path mismatch. Expected ${artifact.base_path}`);
-    if (artifact.lock_owner && artifact.lock_owner !== owner) throw new PlangonautError(`Artifact ${id} is locked by ${artifact.lock_owner}`);
+    {
+    /*
+     * The refusal that stranded a real document.
+     *
+     * It said who held the lock and stopped there, so the reader had nothing to
+     * do next: the holder was a Studio session that had closed weeks earlier
+     * and the suggestion in circulation - reopen Studio, close the document,
+     * quit - could not work, because closing a tab never released anything.
+     * The sentence now says what kind of lock it is, how that was established,
+     * and which of the three roads out applies.
+     */
+    const reading = readDocumentLock(artifact, { owner });
+    if (reading.state !== "FREE" && reading.owner !== owner) {
+      throw new PlangonautError(documentLockRefusal(reading, owner), "PROJECT_STATE_UNTRUSTED");
+    }
+  }
     assertNoExternalEdit(root, artifact);
   }
   const stale = expectedArtifactErrors(flags, artifact);
@@ -12533,7 +12623,8 @@ function docSave(flags: Flags): void {
       status: "DRAFT",
       revision: 0,
       content_hash: "",
-      lock_owner: owner,
+      // A new artifact is created unlocked. See the note on the update path.
+      lock_owner: "",
       provenance: sources
     };
     state.artifacts.push(artifact);
@@ -12541,8 +12632,11 @@ function docSave(flags: Flags): void {
     if (!sameRecordedPath(artifact.base_path, basePath)) {
       throw new PlangonautError(`Artifact ${id} base_path mismatch. Expected ${artifact.base_path}`);
     }
-    if (artifact.lock_owner && artifact.lock_owner !== owner) {
-      throw new PlangonautError(`Artifact ${id} is locked by ${artifact.lock_owner}`);
+    {
+      const reading = readDocumentLock(artifact, { owner });
+      if (reading.state !== "FREE" && reading.owner !== owner) {
+        throw new PlangonautError(documentLockRefusal(reading, owner), "PROJECT_STATE_UNTRUSTED");
+      }
     }
     assertNoExternalEdit(root, artifact);
   }
@@ -12596,8 +12690,33 @@ function docSave(flags: Flags): void {
   artifact.working_path = newWorkingPath;
   artifact.revision = newRevision;
   artifact.content_hash = hash;
-  artifact.lock_owner = owner;
   artifact.provenance = sources;
+  /*
+   * A save records who wrote the revision. It does not start an editing session.
+   *
+   * This line used to be `artifact.lock_owner = owner`, and it is the origin of
+   * the whole defect: every save silently took a lock that nothing ever
+   * released, so the author of the last revision and the holder of an editing
+   * session became the same field. They are different facts with different
+   * lifetimes - the author belongs to the event that produced the revision, and
+   * is recorded there, permanently.
+   *
+   * A caller that genuinely holds an editing session keeps it: `--session` says
+   * so, and the lock is refreshed rather than invented. A caller that does not
+   * pass one leaves the document unlocked, which is what a finished write is.
+   */
+  const savingSession = typeof flags.session === "string" ? String(flags.session).trim() : "";
+  if (savingSession) {
+    artifact.lock = {
+      owner,
+      session: savingSession,
+      host: os.hostname(),
+      pid: sessionPid(flags),
+      acquired_at: artifact.lock?.session === savingSession ? artifact.lock.acquired_at : now(),
+      renewed_at: now(),
+    };
+    artifact.lock_owner = owner;
+  }
   // A new working revision supersedes the publication: the base file keeps the
   // finalized bytes, but the artifact is no longer what doc-finalize published.
   artifact.status = "DRAFT";
@@ -12636,6 +12755,431 @@ function docSave(flags: Flags): void {
   console.log(`${JSON.stringify({ artifact_id: id, working_path: newWorkingPath, revision: newRevision, hash, adopted_existing_file: adoptingExistingFile, diff, deletion_intent_ids: deletionIntentIds, warnings }, null, 2)}`);
 }
 
+// ---------------------------------------------------------------------------
+// The document lock, and the four things it can be
+// ---------------------------------------------------------------------------
+
+/*
+ * This is not `plangonaut unlock`.
+ *
+ * `unlock` releases the **project** lock in `.plangonaut/lock.json`: one file,
+ * one process, held for the duration of a single command, and about whether two
+ * writers are touching the folder at once.
+ *
+ * This is about one document and one editing session, it lives inside the state
+ * as a field of the artifact, and it survives across commands on purpose. They
+ * are different mechanisms with different lifetimes, and the names are kept
+ * apart so that nobody reaches for the wrong one in a hurry.
+ */
+
+type DocumentLockState =
+  /** Nothing holds it. */
+  | "FREE"
+  /** Held by the caller's own session, on this host. */
+  | "MINE"
+  /** Held by somebody else, or by a session that is not this one. */
+  | "HELD"
+  /** This host, this owner, and the process is gone. Demonstrably over. */
+  | "STALE"
+  /** A bare name with no session, host or process. Nothing can be proved. */
+  | "LEGACY_UNKNOWN";
+
+interface DocumentLockReading {
+  artifact: string;
+  state: DocumentLockState;
+  owner: string | null;
+  session: string | null;
+  host: string | null;
+  pid: number | null;
+  acquired_at: string | null;
+  renewed_at: string | null;
+  /** Why it was classified this way, in the words the user is shown. */
+  because: string;
+}
+
+/**
+ * What the lock on this artifact is, judged rather than assumed.
+ *
+ * The one classification everything else reads. `LEGACY_UNKNOWN` is deliberately
+ * not folded into either `HELD` or `STALE`: a bare `"studio:Ale92"` carries no
+ * host, no process and no time, so calling it live would strand the document
+ * and calling it dead would let a second writer in behind somebody's back. It
+ * is unknown, it is reported as unknown, and clearing it is a decision a person
+ * takes with a reason attached.
+ */
+function readDocumentLock(artifact: Artifact, caller?: { owner?: string; session?: string }): DocumentLockReading {
+  const base = {
+    artifact: artifact.id,
+    owner: null as string | null,
+    session: null as string | null,
+    host: null as string | null,
+    pid: null as number | null,
+    acquired_at: null as string | null,
+    renewed_at: null as string | null,
+  };
+
+  const lock = artifact.lock ?? null;
+  if (!lock) {
+    if (!nonEmpty(artifact.lock_owner)) {
+      return { ...base, state: "FREE", because: "nothing holds this document." };
+    }
+    return {
+      ...base,
+      state: "LEGACY_UNKNOWN",
+      owner: artifact.lock_owner,
+      because:
+        `${artifact.lock_owner} is recorded as holding it, and the record carries no session, host, process or time. ` +
+        `It was written by a version that set the holder's name and never cleared it, so whether anybody is still editing cannot be established from the project. ` +
+        `It is neither assumed live nor assumed dead.`,
+    };
+  }
+
+  const reading = {
+    ...base,
+    owner: lock.owner,
+    session: lock.session,
+    host: lock.host,
+    pid: lock.pid ?? null,
+    acquired_at: lock.acquired_at,
+    renewed_at: lock.renewed_at ?? null,
+  };
+
+  if (caller?.session && lock.session === caller.session && lock.host === os.hostname()) {
+    return { ...reading, state: "MINE", because: `held by this session (${lock.session}).` };
+  }
+
+  if (lock.host !== os.hostname()) {
+    return {
+      ...reading,
+      state: "HELD",
+      because: `held by ${lock.owner} on ${lock.host}, which is not this machine. Nothing here can tell whether that session is still running.`,
+    };
+  }
+  /*
+   * `false` is a dead process. `null` is a pid this engine cannot read, and it
+   * is not the same answer: the existing `processIsAlive` draws that line
+   * because a record whose pid was a string once had its lock taken from a
+   * process that was running. An unreadable pid is held, not stale.
+   */
+  if (processIsAlive(lock.pid) === false) {
+    return {
+      ...reading,
+      state: "STALE",
+      because: `held by ${lock.owner} on this machine in process ${lock.pid}, which is no longer running. The session that took it has ended.`,
+    };
+  }
+  return {
+    ...reading,
+    state: "HELD",
+    because:
+      lock.pid === null
+        ? `held by ${lock.owner} on this machine in a session that recorded no process, so it cannot be shown to have ended.`
+        : `held by ${lock.owner} on this machine in process ${lock.pid}, which is still running.`,
+  };
+}
+
+/** The one sentence the refusals print, so six call sites cannot disagree. */
+function documentLockRefusal(reading: DocumentLockReading, owner: string): string {
+  const head = `Artifact ${reading.artifact} is locked by ${reading.owner}`;
+  const remedy =
+    reading.state === "STALE"
+      ? `That session has ended. Recover it: plangonaut doc-lock-recover --project-root . --id ${reading.artifact} --owner ${owner} --operation-id <id>`
+      : reading.state === "LEGACY_UNKNOWN"
+        ? `This is a lock from an older version and its state cannot be established. Look at it first:\n` +
+          `  plangonaut doc-lock --project-root . --id ${reading.artifact}\n` +
+          `then, if you are satisfied nobody is editing it:\n` +
+          `  plangonaut doc-lock-force-release --project-root . --id ${reading.artifact} --owner ${owner} --reason "<why>" --operation-id <id>`
+        : `If they have finished, ${reading.owner} releases it with plangonaut doc-lock-release --project-root . --id ${reading.artifact} --owner ${reading.owner} --operation-id <id>.`;
+  return `${head}.\n${reading.because}\n\n${remedy}\n\nThis is the document's own lock, not the project lock: plangonaut unlock is a different thing and will not help. Nothing was written.`;
+}
+
+/** Find the artifact, or say so in the words of the thing that was asked for. */
+function artifactOrThrow(state: State, id: string): Artifact {
+  const artifact = (state.artifacts ?? []).find((item) => item.id === id);
+  if (!artifact) throw new PlangonautError(`No artifact ${id} in this project.`);
+  return artifact;
+}
+
+/**
+ * The process id of the editing session, when the caller named one.
+ *
+ * Never this process: see the note where it is used. A value that is not a
+ * positive integer is `null`, because a pid nothing can check is the same as
+ * no pid at all and pretending otherwise would let a typo strand a document.
+ */
+function sessionPid(flags: Flags): number | null {
+  const raw = flags.pid;
+  if (typeof raw !== "string") return null;
+  const numeric = Number(raw);
+  return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
+}
+
+function docLockStatus(flags: Flags): void {
+  const root = resolveProject(required(flags, "project-root"));
+  const state = validateRoot(root);
+  const id = typeof flags.id === "string" ? String(flags.id).toUpperCase() : null;
+  const session = typeof flags.session === "string" ? String(flags.session) : undefined;
+
+  const artifacts = id ? [artifactOrThrow(state, id)] : (state.artifacts ?? []);
+  const readings = artifacts.map((artifact) => readDocumentLock(artifact, { session }));
+
+  if (flags.json === true) {
+    console.log(JSON.stringify({ locks: readings }, null, 2));
+    return;
+  }
+  if (!readings.length) return console.log("This project records no documents.");
+  for (const reading of readings) {
+    if (reading.state === "FREE" && id === null) continue;
+    console.log(`${reading.artifact}: ${reading.state}`);
+    console.log(`  ${reading.because}`);
+    if (reading.acquired_at) console.log(`  acquired ${reading.acquired_at}${reading.renewed_at ? `, renewed ${reading.renewed_at}` : ""}`);
+  }
+  if (id === null && readings.every((reading) => reading.state === "FREE")) {
+    console.log("No document in this project is locked.");
+  }
+  console.log(`\nThis is the document lock. The project lock is a different mechanism: plangonaut unlock --project-root .`);
+}
+
+/**
+ * One mutation shape for every lock change, so the four commands cannot drift.
+ *
+ * Each of them changes the same field, records the same kind of event and takes
+ * the same precautions; the only differences are who is allowed to do it and
+ * what is written down about why.
+ */
+function commitLockChange(
+  root: string,
+  flags: Flags,
+  input: {
+    id: string;
+    owner: string;
+    type: string;
+    /** The lock after the change. `null` releases it. */
+    next: DocumentLock | null;
+    previous: DocumentLockReading;
+    reason?: string;
+    idempotentMessage: string;
+    /** Already in the target state: say so and write nothing. */
+    settled?: (reading: DocumentLockReading) => boolean;
+  },
+): void {
+  const key = idempotencyKey(flags);
+  if (checkIdempotency(root, key)) return console.log(input.idempotentMessage);
+  const { location, state } = loadState(root);
+  assertNotBlocked(state);
+  assertKnownOwner(state, input.owner);
+  const artifact = artifactOrThrow(state, input.id);
+
+  /*
+   * Re-read under the lock.
+   *
+   * The classification the caller was shown came from a state read before the
+   * project lock was taken. Between the two, another command may have released
+   * or taken this document's lock, and acting on the earlier reading would be
+   * the check passing and the world having moved.
+   */
+  const current = readDocumentLock(artifact, { owner: input.owner, session: input.next?.session });
+  if (input.settled?.(current)) return console.log(input.idempotentMessage);
+
+  const timestamp = now();
+  if (input.next) {
+    artifact.lock = { ...input.next, acquired_at: input.next.acquired_at || timestamp };
+    artifact.lock_owner = input.next.owner;
+  } else {
+    artifact.lock = null;
+    // Cleared together, on purpose: leaving the legacy field set while the
+    // structured lock is gone would recreate the ambiguity this closes.
+    artifact.lock_owner = "";
+  }
+
+  state.updated_at = timestamp;
+  const stateRevision = state.revision + 1;
+  const eventId = crypto.randomUUID();
+  state.revision = stateRevision;
+  state.last_event_id = eventId;
+  const event = {
+    event_id: eventId,
+    type: input.type,
+    state_revision: stateRevision,
+    at: timestamp,
+    idempotency_key: key,
+    artifact_id: input.id,
+    owner: input.owner,
+    /*
+     * What was there before, recorded in the event.
+     *
+     * A release that does not say what it released cannot be audited: the
+     * field is gone from the state afterwards, and the event is the only place
+     * a reader can learn that `studio:Ale92` ever held it.
+     */
+    previous_state: input.previous.state,
+    previous_owner: input.previous.owner,
+    previous_session: input.previous.session,
+    previous_host: input.previous.host,
+    previous_pid: input.previous.pid,
+    ...(input.reason ? { reason: input.reason } : {}),
+    ...(input.next ? { session: input.next.session, host: input.next.host, pid: input.next.pid } : {}),
+  };
+  commitState(root, location, state, event);
+}
+
+function docLockAcquire(flags: Flags): void {
+  const root = resolveProject(required(flags, "project-root"));
+  const { state } = loadState(root);
+  const id = required(flags, "id").toUpperCase();
+  const owner = required(flags, "owner").trim();
+  const session = required(flags, "session").trim();
+  if (!session) throw new PlangonautError(`--session cannot be empty: a lock with no session is the shape this replaces.`);
+  const artifact = artifactOrThrow(state, id);
+  const reading = readDocumentLock(artifact, { owner, session });
+
+  if (reading.state === "MINE") {
+    return console.log(`${id} is already held by this session (${session}).`);
+  }
+  if (reading.state !== "FREE") {
+    throw new PlangonautError(documentLockRefusal(reading, owner), "PROJECT_STATE_UNTRUSTED");
+  }
+
+  commitLockChange(root, flags, {
+    id,
+    owner,
+    type: "DOCUMENT_LOCK_ACQUIRED",
+    previous: reading,
+    /*
+     * The session's process, not this command's.
+     *
+     * `process.pid` here is the CLI invocation, which exits the moment the
+     * command returns — so every lock it took was already stale by the time
+     * anything read it, and the classifier said so correctly about a lock
+     * nobody had abandoned. The pid that matters belongs to whoever holds the
+     * editing session, and only they can supply it.
+     *
+     * Absent is `null`, which the classifier reads as held-and-unprovable
+     * rather than as dead. That is the right default: a lock that cannot be
+     * shown to be over is not over.
+     */
+    next: { owner, session, host: os.hostname(), pid: sessionPid(flags), acquired_at: now() },
+    idempotentMessage: `Idempotent retry: ${id} is already held by this session.`,
+    settled: (current) => current.state === "MINE",
+  });
+  console.log(`${id} is now held by ${owner}, session ${session}, on ${os.hostname()}.`);
+  console.log(`Release it when the editing session ends: plangonaut doc-lock-release --project-root . --id ${id} --owner ${owner} --operation-id <id>`);
+}
+
+function docLockRelease(flags: Flags): void {
+  const root = resolveProject(required(flags, "project-root"));
+  const { state } = loadState(root);
+  const id = required(flags, "id").toUpperCase();
+  const owner = required(flags, "owner").trim();
+  const artifact = artifactOrThrow(state, id);
+  const reading = readDocumentLock(artifact, { owner });
+
+  if (reading.state === "FREE") return console.log(`${id} is not locked.`);
+
+  /*
+   * The holder releases their own lock, and nobody else's.
+   *
+   * A different owner taking it silently is the failure mode the brief names,
+   * and it is the one that costs the most: the second writer believes they hold
+   * a document the first still has open. Every other road out of a lock -
+   * recover and force-release - says what it is doing and why in an event.
+   */
+  if (reading.owner !== owner) {
+    throw new PlangonautError(
+      `${id} is held by ${reading.owner}, not by ${owner}.\n${reading.because}\n\n` +
+      `A lock is released by the owner that holds it. If that owner is gone:\n` +
+      (reading.state === "STALE"
+        ? `  plangonaut doc-lock-recover --project-root . --id ${id} --owner ${owner} --operation-id <id>\n`
+        : `  plangonaut doc-lock-force-release --project-root . --id ${id} --owner ${owner} --reason "<why>" --operation-id <id>\n`) +
+      `Nothing was written.`,
+      "PROJECT_STATE_UNTRUSTED",
+    );
+  }
+
+  commitLockChange(root, flags, {
+    id, owner, type: "DOCUMENT_LOCK_RELEASED", previous: reading, next: null,
+    idempotentMessage: `Idempotent retry: ${id} is already released.`,
+    settled: (current) => current.state === "FREE",
+  });
+  console.log(`${id} is released. ${owner} no longer holds it.`);
+}
+
+function docLockRecover(flags: Flags): void {
+  const root = resolveProject(required(flags, "project-root"));
+  const { state } = loadState(root);
+  const id = required(flags, "id").toUpperCase();
+  const owner = required(flags, "owner").trim();
+  const artifact = artifactOrThrow(state, id);
+  const reading = readDocumentLock(artifact, { owner });
+
+  if (reading.state === "FREE") return console.log(`${id} is not locked; there is nothing to recover.`);
+
+  /*
+   * Recovery is for a lock that can be *shown* to be over.
+   *
+   * This host, and a process that is no longer running. Anything else - another
+   * machine, a live process, or a legacy record with no evidence at all - is
+   * not demonstrable, and the command says so rather than deciding on the
+   * user's behalf. `force-release` exists for those, and asks for a reason.
+   */
+  if (reading.state !== "STALE") {
+    throw new PlangonautError(
+      `${id} cannot be recovered: its lock is not demonstrably over.\n${reading.because}\n\n` +
+      (reading.state === "LEGACY_UNKNOWN"
+        ? `A legacy lock records no host, process or session, so nothing can prove it ended. Releasing it is a decision, not a recovery:\n` +
+          `  plangonaut doc-lock-force-release --project-root . --id ${id} --owner ${owner} --reason "<why>" --operation-id <id>\n`
+        : `If you know that session has ended, release it deliberately:\n` +
+          `  plangonaut doc-lock-force-release --project-root . --id ${id} --owner ${owner} --reason "<why>" --operation-id <id>\n`) +
+      `Nothing was written.`,
+      "PROJECT_STATE_UNTRUSTED",
+    );
+  }
+
+  commitLockChange(root, flags, {
+    id, owner, type: "DOCUMENT_LOCK_RECOVERED", previous: reading, next: null,
+    reason: `process ${reading.pid} on ${reading.host} is no longer running`,
+    idempotentMessage: `Idempotent retry: ${id} was already recovered.`,
+    settled: (current) => current.state === "FREE",
+  });
+  console.log(`${id} is recovered. ${reading.owner} held it in process ${reading.pid} on ${reading.host}, which has ended.`);
+  console.log(`The document is now free. ${owner} may take it with plangonaut doc-lock-acquire, or finalize it directly.`);
+}
+
+function docLockForceRelease(flags: Flags): void {
+  const root = resolveProject(required(flags, "project-root"));
+  const { state } = loadState(root);
+  const id = required(flags, "id").toUpperCase();
+  const owner = required(flags, "owner").trim();
+  const reason = required(flags, "reason").trim();
+  if (!reason) throw new PlangonautError(`--reason cannot be empty: a lock taken from somebody else is a decision, and a decision without a reason is not auditable.`);
+  const artifact = artifactOrThrow(state, id);
+  const reading = readDocumentLock(artifact, { owner });
+
+  if (reading.state === "FREE") return console.log(`${id} is not locked.`);
+
+  console.log(`Releasing a lock this engine cannot prove is over.`);
+  console.log(`  document   ${id}`);
+  console.log(`  held by    ${reading.owner ?? "unknown"}`);
+  console.log(`  session    ${reading.session ?? "not recorded"}`);
+  console.log(`  host       ${reading.host ?? "not recorded"}`);
+  console.log(`  process    ${reading.pid ?? "not recorded"}`);
+  console.log(`  acquired   ${reading.acquired_at ?? "not recorded"}`);
+  console.log(`  state      ${reading.state}`);
+  console.log(`  reason     ${reason}`);
+  console.log(``);
+
+  commitLockChange(root, flags, {
+    id, owner, type: "DOCUMENT_LOCK_FORCE_RELEASED", previous: reading, next: null, reason,
+    idempotentMessage: `Idempotent retry: ${id} was already force-released.`,
+    settled: (current) => current.state === "FREE",
+  });
+  console.log(`${id} is released by ${owner}. The previous holder is recorded in the event, not lost.`);
+  if (reading.state === "LEGACY_UNKNOWN") {
+    console.log(`If ${reading.owner} was in fact still editing, their unsaved work is in their editor and not in this project. Nothing here was overwritten.`);
+  }
+}
+
+
 function docHistory(flags: Flags): void {
   const root = resolveProject(required(flags, "project-root"));
   const id = required(flags, "id").toUpperCase();
@@ -12669,8 +13213,11 @@ function docRestore(flags: Flags): void {
   const stale = expectedArtifactErrors(flags, artifact);
   if (stale.length) throw new PlangonautError(`Document restore refused:\n- ${stale.join("\n- ")}\nNo changes written.`);
   
-  if (artifact.lock_owner && artifact.lock_owner !== owner) {
-    throw new PlangonautError(`Artifact ${id} is locked by ${artifact.lock_owner}`);
+  {
+    const reading = readDocumentLock(artifact, { owner });
+    if (reading.state !== "FREE" && reading.owner !== owner) {
+      throw new PlangonautError(documentLockRefusal(reading, owner), "PROJECT_STATE_UNTRUSTED");
+    }
   }
   
   assertNoExternalEdit(root, artifact);
@@ -12694,7 +13241,8 @@ function docRestore(flags: Flags): void {
   artifact.working_path = newWorkingPath;
   artifact.revision = newRevision;
   artifact.content_hash = hash;
-  artifact.lock_owner = owner;
+  // Restoring writes a revision and does not open an editing session, for the
+  // same reason a save does not. The author is on the event.
   artifact.status = "DRAFT";
   
   const timestamp = now();
@@ -12734,8 +13282,11 @@ function docFinalize(flags: Flags): void {
   const stale = expectedArtifactErrors(flags, artifact);
   if (stale.length) throw new PlangonautError(`Document finalize refused:\n- ${stale.join("\n- ")}\nNo changes written.`);
   
-  if (artifact.lock_owner && artifact.lock_owner !== owner) {
-    throw new PlangonautError(`Artifact ${id} is locked by ${artifact.lock_owner}`);
+  {
+    const reading = readDocumentLock(artifact, { owner });
+    if (reading.state !== "FREE" && reading.owner !== owner) {
+      throw new PlangonautError(documentLockRefusal(reading, owner), "PROJECT_STATE_UNTRUSTED");
+    }
   }
   if (!artifact.working_path) {
     throw new PlangonautError(`Artifact ${id} has no working path to finalize.`);
@@ -12781,6 +13332,21 @@ function docFinalize(flags: Flags): void {
   const workingBytes = fs.readFileSync(absoluteWorking);
   artifact.working_path = artifact.base_path;
   artifact.status = "PUBLISHED";
+  /*
+   * Publishing ends the editing session it was holding.
+   *
+   * This is the fourth of the release points and the only one the engine can
+   * reach on its own: the others - closing a tab, changing project, closing the
+   * application - belong to whoever is editing. A finalized document is not
+   * being edited by definition, so leaving the lock on it is the same defect in
+   * a smaller form.
+   *
+   * Recorded on the DOCUMENT_FINALIZED event rather than as a separate lock
+   * event, because it is one act: nothing observable happens between the two.
+   */
+  const releasedLock = readDocumentLock(artifact, { owner });
+  artifact.lock = null;
+  artifact.lock_owner = "";
   
   const timestamp = now();
   state.updated_at = timestamp;
@@ -12788,7 +13354,7 @@ function docFinalize(flags: Flags): void {
   const eventId = crypto.randomUUID();
   state.revision = stateRevision;
   state.last_event_id = eventId;
-  const event = { event_id: eventId, type: "DOCUMENT_FINALIZED", state_revision: stateRevision, at: timestamp, idempotency_key: key, artifact_id: id, revision: artifact.revision, hash: artifact.content_hash, owner, ...(supersededPath ? { superseded_external_path: supersededPath, superseded_external_hash: supersededHash } : {}) };
+  const event = { event_id: eventId, type: "DOCUMENT_FINALIZED", state_revision: stateRevision, at: timestamp, idempotency_key: key, artifact_id: id, revision: artifact.revision, hash: artifact.content_hash, owner, ...(releasedLock.state !== "FREE" ? { released_lock_owner: releasedLock.owner, released_lock_state: releasedLock.state } : {}), ...(supersededPath ? { superseded_external_path: supersededPath, superseded_external_hash: supersededHash } : {}) };
   assertPendingState(root, state, event);
   const transaction = beginFileTransaction(root, event, [absoluteBase, absoluteWorking, historyLocation(root, priorArtifact, priorArtifact.revision), ...(supersededSnapshot ? [supersededSnapshot] : [])]);
   try {
@@ -13124,7 +13690,7 @@ function help(): void {
   qa-close --project-root . --id QNA-0001 --kind deferred|skipped|invalidated --reason TEXT --owner NAME
   qa-supersede --project-root . --id QNA-0001 --new-id QNA-0009 --question TEXT --rationale TEXT --reason TEXT --owner NAME
   qa-log --project-root . [--open] [--last] [--json] [--id QNA-0001] [--regenerate]
-  context-pack --project-root . [--output session.md]\n  validate --project-root . [--strict]\n  govern --project-root . --exclude docs/appunti.md --reason TEXT --owner NAME\n  govern --project-root . --include docs/appunti.md --owner NAME\n  migrate --project-root .\n  migrate-backups --project-root . [--apply]        (move a pre-0.3.0-alpha.5 backups/ directory under the ledger)\n  migrate-brand --project-root . --dry-run                   (what a brand migration would do; writes nothing)\n  migrate-brand --project-root .                             (.beave -> .plangonaut, verified backup and receipt)\n  migrate-brand --project-root . --resume                    (finish one that was interrupted)\n  migrate-brand --project-root . --rollback MIG-ID           (undo one, verifying receipt and backup)\n  migrate-brand --project-root . --rollback MIG-ID --discard-changes  (and throw away what was recorded since)\n  replay --project-root . [--verify]                     (rebuild the state from the events and compare)\n  replay --project-root . --repair --operation-id OP-ID  (put the rebuilt state back, keeping a backup)\n  baseline --project-root . --reason TEXT --owner NAME --operation-id OP-ID\n  recover --project-root . [--apply]                     (interrupted operations: what they are, and finish them)\n  unlock --project-root . [--force]                      (who holds the project lock, and release an abandoned one)\n  project-export --project-root . --output-dir DIR\n  project-verify --package-dir DIR\n  handoff-check --project-root . [--json]                (is this folder enough for somebody who was not here?)\n  execution-readiness --project-root . [--json]          (is the work executable, or only defined?)\n  compat-check --project-root . [--json] [--writer-engine NAME --writer-version V --writer-schema N --writer-event-format N --writer-reads-formats 1,2]\n  execution-intent --project-root . --execution|--definition-only --reason TEXT --owner NAME --operation-id ID\n  execution-org --project-root . --executors N --mode TEXT --reviewer NAME --concurrency TEXT --handoff TEXT [--integrator NAME] --owner NAME --operation-id ID\n  read-record --project-root . --path FILE --purpose TEXT [--agent NAME] [--conclusions TEXT] [--used-by IDS] --owner NAME --operation-id ID\n  project-import --package-dir DIR --project-root NEW_DIR\n  export --target portable|codex|claude|gemini|agy --output-dir DIR\n  install --target codex|claude|gemini|agy|all [--scope project|workspace|user] [--project-root DIR] [--dry-run]\n  verify-install --target codex|claude|gemini|agy [--scope project|workspace|user] [--project-root DIR]\n  version`);
+  context-pack --project-root . [--output session.md]\n  validate --project-root . [--strict]\n  govern --project-root . --exclude docs/appunti.md --reason TEXT --owner NAME\n  govern --project-root . --include docs/appunti.md --owner NAME\n  migrate --project-root .\n  migrate-backups --project-root . [--apply]        (move a pre-0.3.0-alpha.5 backups/ directory under the ledger)\n  migrate-brand --project-root . --dry-run                   (what a brand migration would do; writes nothing)\n  migrate-brand --project-root .                             (.beave -> .plangonaut, verified backup and receipt)\n  migrate-brand --project-root . --resume                    (finish one that was interrupted)\n  migrate-brand --project-root . --rollback MIG-ID           (undo one, verifying receipt and backup)\n  migrate-brand --project-root . --rollback MIG-ID --discard-changes  (and throw away what was recorded since)\n  replay --project-root . [--verify]                     (rebuild the state from the events and compare)\n  replay --project-root . --repair --operation-id OP-ID  (put the rebuilt state back, keeping a backup)\n  baseline --project-root . --reason TEXT --owner NAME --operation-id OP-ID\n  recover --project-root . [--apply]                     (interrupted operations: what they are, and finish them)\n  unlock --project-root . [--force]                      (who holds the project lock, and release an abandoned one)\n  project-export --project-root . --output-dir DIR\n  project-verify --package-dir DIR\n  doc-lock --project-root . [--id ART-ID] [--json]            (who is editing a governed document, and since when)\n  doc-lock-acquire --project-root . --id ART-ID --owner NAME --session S [--pid N] --operation-id ID\n  doc-lock-release --project-root . --id ART-ID --owner NAME --operation-id ID\n  doc-lock-recover --project-root . --id ART-ID --owner NAME --operation-id ID   (a session on this host that has ended)\n  doc-lock-force-release --project-root . --id ART-ID --owner NAME --reason TEXT --operation-id ID\n  handoff-check --project-root . [--json]                (is this folder enough for somebody who was not here?)\n  execution-readiness --project-root . [--json]          (is the work executable, or only defined?)\n  compat-check --project-root . [--json] [--writer-engine NAME --writer-version V --writer-schema N --writer-event-format N --writer-reads-formats 1,2]\n  execution-intent --project-root . --execution|--definition-only --reason TEXT --owner NAME --operation-id ID\n  execution-org --project-root . --executors N --mode TEXT --reviewer NAME --concurrency TEXT --handoff TEXT [--integrator NAME] --owner NAME --operation-id ID\n  read-record --project-root . --path FILE --purpose TEXT [--agent NAME] [--conclusions TEXT] [--used-by IDS] --owner NAME --operation-id ID\n  project-import --package-dir DIR --project-root NEW_DIR\n  export --target portable|codex|claude|gemini|agy --output-dir DIR\n  install --target codex|claude|gemini|agy|all [--scope project|workspace|user] [--project-root DIR] [--dry-run]\n  verify-install --target codex|claude|gemini|agy [--scope project|workspace|user] [--project-root DIR]\n  version`);
 }
 
 /**
@@ -14001,6 +14567,12 @@ export async function main(argv: string[]): Promise<number> {
     }
     else if (command === "migrate") migrate(flags);
     else if (command === "migrate-backups") migrateBackups(flags);
+    // Reading is the bare name, because reading is the safe thing to reach for.
+    else if (command === "doc-lock") docLockStatus(flags);
+    else if (command === "doc-lock-acquire") docLockAcquire(flags);
+    else if (command === "doc-lock-release") docLockRelease(flags);
+    else if (command === "doc-lock-recover") docLockRecover(flags);
+    else if (command === "doc-lock-force-release") docLockForceRelease(flags);
     else if (command === "handoff-check") handoffCheck(flags);
     else if (command === "execution-readiness") executionReadinessCommand(flags);
     else if (command === "compat-check") compatCheck(flags);
