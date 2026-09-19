@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0-alpha.6.dev (unreleased)
+## 0.3.0-alpha.5.dev.0 (unreleased)
 
 Not published. Nothing here is on npm, carries a tag or a GitHub Release, or is
 served by the site; `0.3.0-alpha.5` remains the published Skill and CLI, and
@@ -45,11 +45,56 @@ an empty ledger has no coverage to confirm. Named at the write, enforced at
 `validate --strict` and `handoff-check`. Module 0 is exempt from the last, since
 `init` confirms it from the owners file.
 
-**`ASKED` means shown.** `qa-ask` refuses to open more concurrent unanswered
-questions than the interaction mode puts to a user in a turn -- one, two or three
-for Guided, Standard and Expert. `--planned` is always available, because writing
-down a question you intend to ask is a different act from asking it. This one
-refuses at the write, and can: there is no legitimate batch use of `ASKED`.
+**A block is five questions, and an interview is as many blocks as it needs.**
+An earlier revision of this cycle inferred presentation from a per-turn
+arithmetic -- one, two or three concurrent `ASKED` questions by interaction mode --
+and refused past it. It was withdrawn, because it was wrong twice: the engine
+does not see the conversation, so it proved nothing it claimed to prove, and it
+capped the total size of an interview this contract requires to be exhaustive.
+
+What replaces it is a presentation rule where presentation belongs. `next` lays
+out a block of five by default, `--count N` moves it, and nothing limits how many
+blocks an interview has. The skill asks the user what block size they want and
+keeps to it. Interaction mode governs depth and tone, as it always did.
+
+The size a project settles on is recorded, because a preference held in a
+conversation is one the next agent never hears about. `next --count N --remember
+--owner NAME --operation-id ID` writes `question_block_size`; `--count N` alone
+sizes one block and records nothing, so asking for three questions once never
+quietly becomes the way the project works. `--remember` is what turns a read into
+a write, the shape `replay --repair` and `recover --apply` already have.
+
+Absent is a state, not a zero: a project that has never set one carries no field,
+nothing backfills it, and readers resolve it to five. `status --json` reports
+`question_block_size: { effective, recorded }`, and `resume` and the context pack
+carry the effective value near the top.
+
+`PLANNED`, `ASKED`, `ANSWERED` and settled stay four distinct things, and the
+duty behind `ASKED` -- that the question was actually shown -- is the skill's,
+stated as a duty rather than dressed up as a check.
+
+**Nothing advances over a contradiction the project already records.** The
+findings `validate --strict` fails on are now shown before any next step: by
+`next`, at the top of `resume`, in `status --json` as `advance_blocked_by`, and
+in the recorded `exact_next_action`, which names the contradiction instead of
+proposing the next module. The synthetic pilot found the gap -- a module
+`CONFIRMED` over two open questions, a folder `handoff-check` refused, and every
+surface saying "Discuss module 2". One list, computed once, so a session never
+reports two different counts of the same thing. None of it refuses: resolve the
+finding, or downgrade the claim to `NOT_APPLICABLE`, `DEFERRED` or `PROPOSED`.
+
+**What counts as a document nobody is governing, stated and bounded.** Only
+Markdown, so a source file, a lockfile, an asset or a build artifact is never
+reported. Dependency, build and cache trees are not walked, and the list of them
+grew: `third_party`, `deps`, `pods`, `obj`, `bin`, `_build`, `htmlcov` and their
+companions join the ones already there. A document is looked for where documents
+live -- the project root, the governed directories, and directories named for
+what they hold: `docs`, `specs`, `plans`, `decisions`, `adr`, `requirements`.
+A `-vN.md` file inside application code is somebody's working note, and it used
+to be reported as an ungoverned deliverable; so did one that was in the folder
+before `init`, which the second tier had always known better than to do.
+`plangonaut handoff-check --help` now states the scope, so a reader can tell what
+its silence means.
 
 **A forecast says whose numbers it is.** `forecast` requires `--author
 agent|human`, recorded as `authored_by`. `recorded_by` is the owner under whose
@@ -76,6 +121,12 @@ Compatibility: no field is removed or made required on an existing project. A
 project written by `0.3.0-alpha.5` loads, validates and continues; what is new is
 reported, not refused. The state schema gains two optional blocks --
 `provenance` on a decision and `authored_by` on the forecast.
+
+The version is `0.3.0-alpha.5.dev.0` rather than `0.3.0-alpha.6.dev`, and the
+shape is the point: under SemVer precedence it sorts after `0.3.0-alpha.5` and
+before `0.3.0-alpha.6`, so a development version is orderable against the release
+it follows without claiming to be the next one. `versions.json` records it as
+`source` while `published` stays `0.3.0-alpha.5`.
 
 
 ## 0.3.0-alpha.5
