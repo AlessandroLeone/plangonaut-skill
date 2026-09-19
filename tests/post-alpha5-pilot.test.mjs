@@ -44,6 +44,9 @@ async function run(...argv) {
   };
 }
 
+/** How many numbered questions one `next` laid out. */
+const blockSize = (text) => text.split("\n").filter((line) => /^\s*\d+\.\s/.test(line)).length;
+
 let sequence = 0;
 const op = (label) => `op-${label}-${(sequence += 1)}`;
 
@@ -245,30 +248,144 @@ test("an approval written by an older engine is reported, not refused", async ()
 // ASKED means shown
 // ---------------------------------------------------------------------------
 
-test("more questions cannot be ASKED at once than a turn can show", async () => {
-  // alpha.5: an agent could record a dozen as ASKED and show none.
+test("a block is five questions, and nothing caps how many blocks an interview has", async () => {
+  /*
+   * The rule this replaces was mine, and it was wrong.
+   *
+   * It refused a third concurrent ASKED question in Standard, reasoning that a
+   * turn can only show so many. That proved nothing -- the engine does not see
+   * the conversation -- and it capped the size of an interview the contract
+   * requires to be exhaustive. Here: five in one block, then five more, then a
+   * sixth beyond the default, with nothing refusing any of it.
+   */
   const root = await project();
-  for (const id of ["QNA-0001", "QNA-0002"]) {
+  for (const id of ["QNA-0001", "QNA-0002", "QNA-0003", "QNA-0004", "QNA-0005"]) {
     const result = await run("qa-ask", "--project-root", root, "--id", id, "--question", `q ${id}`,
       "--rationale", "r", "--owner", "Ada", "--module", "1", "--operation-id", op("ask"));
-    assert.equal(result.error, null, result.message);
+    assert.equal(result.error, null, `${id}: ${result.message}`);
   }
-  const third = await run("qa-ask", "--project-root", root, "--id", "QNA-0003", "--question", "q3",
+  for (const id of ["QNA-0006", "QNA-0007", "QNA-0008", "QNA-0009", "QNA-0010"]) {
+    const result = await run("qa-ask", "--project-root", root, "--id", id, "--question", `q ${id}`,
+      "--rationale", "r", "--owner", "Ada", "--module", "1", "--operation-id", op("ask"));
+    assert.equal(result.error, null, `second block, ${id}: ${result.message}`);
+  }
+  const eleventh = await run("qa-ask", "--project-root", root, "--id", "QNA-0011", "--question", "q11",
     "--rationale", "r", "--owner", "Ada", "--module", "1", "--operation-id", op("ask"));
-  assert.notEqual(third.error, null, "Standard shows two questions in a turn, not three");
-  assert.match(third.message, /already ASKED and unanswered/);
-  assert.match(third.message, /--planned/);
+  assert.equal(eleventh.error, null, eleventh.message);
+
+  const state = JSON.parse(fs.readFileSync(path.join(root, ".plangonaut", "state.json"), "utf8"));
+  assert.equal(state.interview_log.filter((entry) => entry.status === "ASKED").length, 11);
 });
 
-test("a planned question is always allowed, however many are waiting", async () => {
+test("next lays out a block of five by default, and --count moves it", async () => {
+  const root = await project();
+  const byDefault = await run("next", "--project-root", root);
+  assert.equal(byDefault.error, null, byDefault.message);
+  assert.equal(blockSize(byDefault.out), 5, byDefault.out);
+
+  const narrowed = await run("next", "--project-root", root, "--count", "3");
+  assert.equal(blockSize(narrowed.out), 3, narrowed.out);
+
+  const wide = await run("next", "--project-root", root, "--count", "8");
+  assert.equal(wide.error, null, "eight in a block was refused by the old 1|2|3 rule");
+  assert.ok(blockSize(wide.out) >= 5, wide.out);
+
+  const nonsense = await run("next", "--project-root", root, "--count", "0");
+  assert.notEqual(nonsense.error, null);
+  assert.match(nonsense.message, /it does not limit how many blocks an interview has/);
+});
+
+test("the block size defaults to five, and a project that never set one is not changed", async () => {
+  const root = await project();
+
+  const reported = JSON.parse((await run("status", "--project-root", root)).out);
+  assert.deepEqual(reported.question_block_size, { effective: 5, recorded: false },
+    "absent is a fact of its own: nobody has said, which is not the same as choosing five");
+
+  assert.equal(blockSize((await run("next", "--project-root", root)).out), 5);
+
+  // An occasional --count is this block only. The engine does not learn a
+  // preference from somebody asking for three questions once.
+  assert.equal(blockSize((await run("next", "--project-root", root, "--count", "3")).out), 3);
+  const after = JSON.parse((await run("status", "--project-root", root)).out);
+  assert.deepEqual(after.question_block_size, { effective: 5, recorded: false });
+
+  const state = JSON.parse(fs.readFileSync(path.join(root, ".plangonaut", "state.json"), "utf8"));
+  assert.equal("question_block_size" in state, false, "reading a project must not write a field into it");
+});
+
+test("--remember is how a block size becomes the project's own", async () => {
+  const root = await project();
+
+  const needsSize = await run("next", "--project-root", root, "--remember", "--owner", "Ada",
+    "--operation-id", op("remember"));
+  assert.notEqual(needsSize.error, null, "--remember with nothing to remember is not a preference");
+  assert.match(needsSize.message, /needs the size to remember/);
+
+  const tooBig = await run("next", "--project-root", root, "--count", "21", "--remember", "--owner", "Ada",
+    "--operation-id", op("remember"));
+  assert.notEqual(tooBig.error, null);
+  assert.match(tooBig.message, /between 1 and 20/);
+
+  const recorded = await run("next", "--project-root", root, "--count", "3", "--remember", "--owner", "Ada",
+    "--operation-id", op("remember"));
+  assert.equal(recorded.error, null, recorded.message);
+  assert.match(recorded.out, /3 questions in a block/);
+
+  const reported = JSON.parse((await run("status", "--project-root", root)).out);
+  assert.deepEqual(reported.question_block_size, { effective: 3, recorded: true });
+  assert.equal(blockSize((await run("next", "--project-root", root)).out), 3, "next uses what was recorded");
+  assert.equal(blockSize((await run("next", "--project-root", root, "--count", "5")).out), 5,
+    "--count still sizes one block");
+
+  // The history says what it was, including that nothing was set before.
+  const events = fs.readFileSync(path.join(root, ".plangonaut", "events.jsonl"), "utf8")
+    .trim().split("\n").map((line) => JSON.parse(line));
+  const event = events.find((entry) => entry.type === "QUESTION_BLOCK_SIZE_SET");
+  assert.equal(event.question_block_size, 3);
+  assert.equal(event.previous_question_block_size, null);
+  assert.equal(event.owner, "Ada");
+});
+
+test("a fresh agent reads the block size out of the folder, not out of the conversation", async () => {
+  const root = await project();
+  await run("next", "--project-root", root, "--count", "8", "--remember", "--owner", "Ada",
+    "--operation-id", op("remember"));
+
+  const resumed = await run("resume", "--project-root", root);
+  assert.equal(resumed.error, null, resumed.message);
+  assert.match(resumed.out, /- Question block: 8\n/);
+
+  const pack = await run("context-pack", "--project-root", root);
+  assert.match(pack.out, /- Question block: 8\n/);
+
+  const untouched = await run("resume", "--project-root", await project());
+  assert.match(untouched.out, /- Question block: 5 \(nobody has set one; this is the default\)/);
+});
+
+test("PLANNED, ASKED, ANSWERED and settled stay four different things", async () => {
   const root = await project();
   await run("qa-ask", "--project-root", root, "--id", "QNA-0001", "--question", "q1", "--rationale", "r",
-    "--owner", "Ada", "--module", "1", "--operation-id", op("ask"));
+    "--owner", "Ada", "--module", "1", "--planned", "--operation-id", op("ask"));
   await run("qa-ask", "--project-root", root, "--id", "QNA-0002", "--question", "q2", "--rationale", "r",
     "--owner", "Ada", "--module", "1", "--operation-id", op("ask"));
-  const planned = await run("qa-ask", "--project-root", root, "--id", "QNA-0003", "--question", "q3",
-    "--rationale", "r", "--owner", "Ada", "--module", "1", "--planned", "--operation-id", op("ask"));
-  assert.equal(planned.error, null, planned.message);
+  const answer = path.join(root, "a.txt");
+  fs.writeFileSync(answer, "the user's own words\n");
+  await run("qa-answer", "--project-root", root, "--id", "QNA-0002", "--answer-file", answer,
+    "--owner", "Ada", "--operation-id", op("answer"));
+
+  let state = JSON.parse(fs.readFileSync(path.join(root, ".plangonaut", "state.json"), "utf8"));
+  const entry = (id) => state.interview_log.find((item) => item.id === id);
+  assert.equal(entry("QNA-0001").status, "PLANNED");
+  assert.equal(entry("QNA-0001").asked_at, null, "planned means not put to anybody");
+  assert.equal(entry("QNA-0002").status, "ANSWERED");
+  assert.equal(entry("QNA-0002").consequences_recorded_at, null, "answered is not settled");
+
+  await run("qa-settle", "--project-root", root, "--id", "QNA-0002", "--interpretation", "understood",
+    "--reply", "recorded", "--owner", "Ada", "--operation-id", op("settle"));
+  state = JSON.parse(fs.readFileSync(path.join(root, ".plangonaut", "state.json"), "utf8"));
+  assert.equal(entry("QNA-0002").status, "ANSWERED", "settled is a timestamp, not a fifth status word");
+  assert.ok(entry("QNA-0002").consequences_recorded_at, "and only qa-settle writes it");
 });
 
 // ---------------------------------------------------------------------------
@@ -377,6 +494,91 @@ test("a forecast must say whether it is an estimate or a commitment", async () =
 });
 
 // ---------------------------------------------------------------------------
+// Nothing advances over a contradiction the project already records
+// ---------------------------------------------------------------------------
+
+/** A module confirmed over its own open question: the folder's own contradiction. */
+async function incoherentlyConfirmed() {
+  const root = await project();
+  await run("qa-ask", "--project-root", root, "--id", "QNA-0001", "--question", "q", "--rationale", "r",
+    "--owner", "Ada", "--module", "1", "--operation-id", op("ask"));
+  const evidence = path.join(root, "summary.md");
+  fs.writeFileSync(evidence, "# what I read\n");
+  await run("record", "--project-root", root, "--module", "1", "--status", "CONFIRMED",
+    "--answer-file", evidence, "--owner", "Ada", "--operation-id", op("record"));
+  return root;
+}
+
+test("an incoherently confirmed module stops the next action advancing", async () => {
+  /*
+   * The synthetic pilot found this, and it is the defect of this whole cycle
+   * committed by the engine rather than by an agent: module 1 was CONFIRMED over
+   * two open questions, handoff-check refused the folder, validate --strict
+   * failed, and the recorded next action said "Discuss module 2". Every part was
+   * individually correct and together they invited an agent to build on a
+   * foundation the same tool had just refused.
+   */
+  const root = await incoherentlyConfirmed();
+
+  const state = JSON.parse(fs.readFileSync(path.join(root, ".plangonaut", "state.json"), "utf8"));
+  assert.doesNotMatch(state.exact_next_action, /Discuss module 2/,
+    "the recorded sentence stepped over the project's own contradiction");
+  assert.match(state.exact_next_action, /Resolve \d+ recorded contradictions? before continuing/);
+
+  // next shows it before it offers anything.
+  const offered = await run("next", "--project-root", root);
+  assert.equal(offered.error, null, offered.message);
+  const first = offered.out.split("\n").find((line) => line.trim());
+  assert.match(first, /^FIRST: \d+ recorded contradictions? stands?|^FIRST: \d+ recorded contradictions stand/);
+  assert.match(offered.out, /module 1 is CONFIRMED, and QNA-0001 is ASKED/);
+  assert.match(offered.out, /NOT_APPLICABLE or DEFERRED|DEFERRED with its reason/);
+
+  // status carries it as data, beside the recorded sentence.
+  const reported = JSON.parse((await run("status", "--project-root", root)).out);
+  assert.ok(Array.isArray(reported.advance_blocked_by));
+  assert.ok(reported.advance_blocked_by.some((line) => line.includes("QNA-0001")), JSON.stringify(reported.advance_blocked_by));
+
+  // resume says it above everything a reader would take for a plan.
+  const resumed = await run("resume", "--project-root", root);
+  assert.match(resumed.out, /## Resolve this before continuing/);
+  assert.ok(
+    resumed.out.indexOf("## Resolve this before continuing") < resumed.out.indexOf("## Catalog questions"),
+    "the hold has to come before the catalogue, or a reader never reaches it",
+  );
+
+  // And the same findings are what validate --strict fails on.
+  const strict = await run("validate", "--project-root", root, "--strict");
+  assert.notEqual(strict.error, null);
+  assert.match(strict.message, /module 1 is CONFIRMED/);
+});
+
+test("downgrading the claim clears the hold, which is the point of not refusing", async () => {
+  const root = await incoherentlyConfirmed();
+  const reason = path.join(root, "why.md");
+  fs.writeFileSync(reason, "This module does not apply: the project has no external users.\n");
+
+  const closed = await run("qa-close", "--project-root", root, "--id", "QNA-0001", "--kind", "skipped",
+    "--reason", "not applicable to this project", "--owner", "Ada", "--operation-id", op("close"));
+  assert.equal(closed.error, null, closed.message);
+
+  // Closing the question is not enough, and the engine is right about that:
+  // the module still claims CONFIRMED with nothing recorded against it. What
+  // the hold asks for is the claim itself, downgraded.
+  const stillHeld = JSON.parse((await run("status", "--project-root", root)).out);
+  assert.match(stillHeld.advance_blocked_by.join("\n"), /nothing is recorded against it/);
+
+  const downgraded = await run("record", "--project-root", root, "--module", "1", "--status", "NOT_APPLICABLE",
+    "--answer-file", reason, "--owner", "Ada", "--operation-id", op("downgrade"));
+  assert.equal(downgraded.error, null, downgraded.message);
+
+  const reported = JSON.parse((await run("status", "--project-root", root)).out);
+  assert.deepEqual(reported.advance_blocked_by, [], "with nothing contradicting it, nothing is held");
+
+  const offered = await run("next", "--project-root", root);
+  assert.doesNotMatch(offered.out, /recorded contradictions? stand/);
+});
+
+// ---------------------------------------------------------------------------
 // handoff-check sees what it cannot govern
 // ---------------------------------------------------------------------------
 
@@ -422,6 +624,94 @@ test("technical, build and dependency files never appear", async () => {
   const noise = [...report.blocking, ...report.advisory].filter((line) =>
     line.includes("README") || line.includes("CHANGELOG") || line.includes("node_modules") || line.includes("dist/"));
   assert.deepEqual(noise, [], noise.join("\n"));
+});
+
+test("POSITIVE CONTROL: an important document nobody is governing is reported", async () => {
+  // The pilot's own failure, in one fixture: the architecture was written by
+  // hand straight to a -vN file, and validate answered "state is valid" all
+  // session. If this stops being reported, the check has been bounded into
+  // uselessness and the negative control below would still pass.
+  const root = await project();
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "architecture-v1.md"),
+    "# Architecture\n\nThe store is SQLite and the sync is one-way.\n");
+
+  const report = JSON.parse((await run("handoff-check", "--project-root", root, "--json")).out);
+  assert.ok(
+    report.blocking.some((line) => line.includes("docs/architecture-v1.md")),
+    report.blocking.join("\n"),
+  );
+
+  const strict = await run("validate", "--project-root", root, "--strict");
+  assert.notEqual(strict.error, null, "--strict is for the caller who has decided the project may not carry one");
+});
+
+test("NEGATIVE CONTROL: an ordinary software project is not reported file by file", async () => {
+  /*
+   * A check that reports a repository's own working files is a check somebody
+   * turns off, which costs more than the documents it would have caught. So:
+   * a realistic tree -- sources, dependencies, build output, caches, vendored
+   * code, temporary files, notes beside the code -- and nothing in it is a
+   * finding about governance.
+   */
+  const root = await project({
+    "src/index.ts": "export const main = () => 0;\n",
+    "src/store/sqlite.ts": "export class Store {}\n",
+    "src/store/README-v2.md": "# working note\n\nMy own scratch notes about this module.\n",
+    "src/components/Button.tsx": "export const Button = () => null;\n",
+    "tests/store.test.ts": "test('it works', () => {});\n",
+    "node_modules/left-pad/README.md": "# left-pad\n",
+    "node_modules/left-pad/docs/usage-v1.md": "# usage\n",
+    "vendor/libfoo/design-v3.md": "# somebody else's design\n",
+    "third_party/bar/spec-v1.md": "# somebody else's spec\n",
+    "dist/bundle.js": "console.log(1)\n",
+    "dist/report-v1.md": "# generated\n",
+    "build/output-v2.md": "# generated\n",
+    "coverage/lcov-report/index.md": "# coverage\n",
+    "tmp/scratch-v1.md": "# temporary\n",
+    "README.md": "# The project\n",
+    "CHANGELOG.md": "# Changelog\n",
+    "LICENSE.md": "MIT\n",
+    "CONTRIBUTING.md": "# How to help\n",
+    "package.json": "{}\n",
+    "package-lock.json": "{}\n",
+  });
+
+  const report = JSON.parse((await run("handoff-check", "--project-root", root, "--json")).out);
+  const governance = [...report.blocking, ...report.advisory].filter((line) => line.includes("claims it"));
+  assert.deepEqual(governance, [], governance.join("\n"));
+
+  const validated = await run("validate", "--project-root", root, "--strict");
+  assert.equal(validated.error, null, validated.message);
+  assert.doesNotMatch(validated.out, /outside the ledger/);
+});
+
+test("a document directory is where a document is looked for, whatever it is called", async () => {
+  // The bound is the place, not the word "docs": a plan in plans/ counts, and
+  // the same file name under application code does not.
+  // Written after init, deliberately: Markdown that was in the folder when the
+  // project was initialised belongs to the repository and not to the plan, and
+  // the engine already records which. Creating these before init is how I first
+  // got this test to pass for the wrong reason.
+  const root = await project();
+  fs.mkdirSync(path.join(root, "plans"), { recursive: true });
+  fs.mkdirSync(path.join(root, "src", "internal"), { recursive: true });
+  fs.writeFileSync(path.join(root, "plans", "rollout-v1.md"), "# Rollout\n\nThe plan for the first release.\n");
+  fs.writeFileSync(path.join(root, "src", "internal", "rollout-v1.md"), "# my notes\n\nScratch, beside the code it is about.\n");
+
+  const report = JSON.parse((await run("handoff-check", "--project-root", root, "--json")).out);
+  const lines = [...report.blocking, ...report.advisory].join("\n");
+  assert.match(lines, /plans\/rollout-v1\.md/);
+  assert.doesNotMatch(lines, /src\/internal\/rollout-v1\.md/);
+});
+
+test("the help says what the check looks at, so a reader can tell what its silence means", async () => {
+  const printed = await run("handoff-check", "--help");
+  assert.equal(printed.error, null, printed.message);
+  assert.match(printed.out, /only Markdown/);
+  assert.match(printed.out, /node_modules/);
+  assert.match(printed.out, /where documents live/);
+  assert.match(printed.out, /not what you excluded/);
 });
 
 test("every blocking finding says how it can be closed", async () => {

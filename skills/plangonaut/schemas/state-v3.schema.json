@@ -137,6 +137,12 @@
     "modules": {
       "type": "array"
     },
+    "question_block_size": {
+      "$comment": "How many questions the interview puts in one block. A presentation preference the user states and `plangonaut next --count N --remember` records; it does not bound the interview, which ends when every applicable module is closed with a reason. Not required, and never backfilled: a project that has never set one has no field here, and absent means nobody said rather than somebody chose five. Readers use 5 when it is absent.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 20
+    },
     "decisions": {
       "type": "array",
       "items": {

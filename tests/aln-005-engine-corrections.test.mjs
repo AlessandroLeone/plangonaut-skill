@@ -374,14 +374,28 @@ describe("ALN-005 engine corrections", () => {
     // change.
     const root = project("NextAction");
     fs.writeFileSync(path.join(root, "answer.md"), "the answer\n");
-    const recordModule = (id) =>
-      run(["record", "--project-root", ".", "--module", String(id), "--status", "CONFIRMED",
+    /*
+     * DEFERRED rather than CONFIRMED for the modules below, and the change is
+     * the fixture's rather than the subject's.
+     *
+     * This test is about who owns `exact_next_action` -- the engine may move its
+     * own sentence and may not move a person's -- and it used to get its modules
+     * terminal by confirming them with a hand-written file and no interview
+     * behind them. That is now a recorded contradiction, and the engine names it
+     * instead of proposing the next module, which would make this test assert a
+     * sentence about coherence while claiming to be about authorship.
+     *
+     * DEFERRED moves the module just as terminally and says something true about
+     * a fixture that has answered nothing.
+     */
+    const recordModule = (id, status = "DEFERRED") =>
+      run(["record", "--project-root", ".", "--module", String(id), "--status", status,
            "--answer-file", "answer.md", "--owner", "A", "--summary", `m${id}`], root);
     const nextAction = () =>
       JSON.parse(fs.readFileSync(path.join(root, ".plangonaut", "state.json"), "utf8")).exact_next_action;
 
     // 1 - ordinary interview: the engine's own sentence is the engine's to move.
-    const first = recordModule(0);
+    const first = recordModule(0, "CONFIRMED");
     assert.strictEqual(first.status, 0, first.stderr);
     assert.match(nextAction(), /^Discuss module 1 —/);
     assert.doesNotMatch(first.stdout, /written by a person/);

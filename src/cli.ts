@@ -444,7 +444,52 @@ interface State {
 }
 
 // Flags that stand alone: they carry approval, not a value.
-const BOOLEAN_FLAGS = new Set(["dry-run", "resume", "discard-changes", "accept-base-overwrite", "replace-human-next-action", "planned", "reconstructed", "regenerate", "open", "last", "json", "verify", "repair", "apply", "force", "crosscutting", "strict", "help", "migrate-backups"]);
+/**
+ * How many questions one block of the interview holds by default.
+ *
+ * A presentation figure and nothing else: it does not bound the interview,
+ * which ends when every applicable module is closed with a reason.
+ */
+const QUESTION_BLOCK_DEFAULT = 5;
+/** The largest block `next` will lay out at once, so one call stays readable. */
+const QUESTION_BLOCK_MAX = 20;
+
+/*
+ * The block size a project has settled on, and the difference between having
+ * one and not.
+ *
+ * The number itself was never the hard part. What was, is that a user who says
+ * "give me three at a time" tells that to an agent in a conversation, and the
+ * next agent to open the folder reads the folder. Every other thing a person
+ * decides about this project is written down; this one was being held in a chat
+ * window, which is precisely the failure the whole product is about.
+ *
+ * Absent is a state, not a zero. A project written before this field existed has
+ * no preference recorded, and that is a different fact from having chosen five.
+ * Nothing backfills it: the field appears when somebody sets it and not before,
+ * so `recorded: false` keeps meaning "nobody said" for as long as it is true.
+ */
+function questionBlockSize(state: State): { effective: number; recorded: boolean } {
+  const value = (state as any).question_block_size;
+  if (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= QUESTION_BLOCK_MAX) {
+    return { effective: value, recorded: true };
+  }
+  return { effective: QUESTION_BLOCK_DEFAULT, recorded: false };
+}
+
+/** One reading of `--count`, refused the same way wherever it arrives. */
+function parseBlockSize(value: unknown, option: string): number {
+  const count = Number(value);
+  if (!Number.isInteger(count) || count < 1 || count > QUESTION_BLOCK_MAX) {
+    throw new PlangonautError(
+      `${option} must be a whole number between 1 and ${QUESTION_BLOCK_MAX}. ` +
+      `It sizes one block; it does not limit how many blocks an interview has.`
+    );
+  }
+  return count;
+}
+
+const BOOLEAN_FLAGS = new Set(["dry-run", "resume", "discard-changes", "accept-base-overwrite", "replace-human-next-action", "planned", "reconstructed", "regenerate", "open", "last", "json", "verify", "repair", "apply", "force", "crosscutting", "strict", "help", "migrate-backups", "remember"]);
 
 /** Line separator used where a template literal would be harder to read. */
 const NL = "\n";
@@ -500,7 +545,9 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   help: [],
   init: ["project-root", "project-name", "project-mode", "interaction-mode", "owners-file", "operation-id"],
   status: ["project-root"],
-  next: ["project-root", "count"],
+  // Reads with `--project-root` alone; `--remember` is what makes it write, the
+  // same shape `replay --repair` and `recover --apply` already have.
+  next: ["project-root", "count", "remember", "owner", "operation-id"],
   resume: ["project-root"],
   validate: ["project-root", "strict"],
   "migrate-backups": ["project-root", "apply"],
@@ -2904,6 +2951,7 @@ const GENERATED_NEXT_ACTIONS: RegExp[] = [
   /^Run `plangonaut next --project-root \.` and discuss module 1\.$/,
   /^Discuss module \d+ — [\s\S]*\.$/,
   /^Review coverage, then proceed to G2\.$/,
+  /^Resolve \d+ recorded contradictions? before continuing; plangonaut validate --strict lists them\.$/,
   /^Reconcile OVR-[a-f0-9]+(?:: identify impacted decisions, artifacts, tasks, agents, tests, and gates\.| before continuing\.)$/,
   /^Reconciled OVR-[a-f0-9]+\. Continue from the recorded plan; no next action was supplied\.$/,
   /^Proceed to G\d+\.$/,
@@ -3803,6 +3851,13 @@ function contextMarkdown(state: State, forecastHistoryEntries = 0): string {
     `- Lifecycle: ${state.lifecycle_state}`,
     `- Gate: ${state.current_gate}`,
     `- Interaction: ${state.interaction_mode}`,
+    // Here rather than further down, because this is read instead of the
+    // conversation the preference was stated in. A fresh agent that misses this
+    // line asks five questions at somebody who said three.
+    (() => {
+      const block = questionBlockSize(state);
+      return `- Question block: ${block.effective}${block.recorded ? "" : " (nobody has set one; this is the default)"}`;
+    })(),
     `- Exact next action: ${state.exact_next_action}`, "",
     // Which engine produced what follows, before anything that follows.
     //
@@ -5385,7 +5440,57 @@ const UNGOVERNED_BASENAMES = new Set([
 const UNSCANNED_DIRECTORIES = new Set([
   "node_modules", "vendor", "bower_components", "dist", "build", "out", "target",
   "coverage", "tmp", "temp", "__pycache__", ".venv", "venv", "site-packages",
+  // Dependencies and vendored trees under their other common names.
+  "third_party", "third-party", "thirdparty", "deps", "pods", "packages",
+  "elm-stuff", "bundle", "jspm_packages",
+  // Build and cache output under their other common names. Anything beginning
+  // with a dot is already skipped, which covers .git, .cache, .next, .gradle,
+  // .tox and the rest.
+  "obj", "bin", "_build", "cmake-build-debug", "cmake-build-release", "htmlcov",
+  "__snapshots__", "generated", "autogen",
 ]);
+
+/*
+ * Where a project document lives.
+ *
+ * `handoff-check` and `validate` are asking one question -- "is there a document
+ * here that the plan rests on and nothing is governing?" -- and the answer is
+ * about project documents: specifications, plans, requirements, decisions,
+ * registers, notes somebody declared relevant. It is not about the repository's
+ * own working files, and a check that reports those is a check somebody turns
+ * off, which costs more than the documents it would have caught.
+ *
+ * Three things bound it, and all three were already partly true. Written down
+ * here so the scope is one thing a reader can see rather than three:
+ *
+ *   the extension   only Markdown. An ordinary source file, a lockfile, a binary
+ *                   asset or a build artifact is never a candidate, whatever it
+ *                   is named and wherever it sits.
+ *   the directory   dependency, build and cache trees are skipped outright, as
+ *                   is anything beginning with a dot, and so is a recorded
+ *                   exclusion.
+ *   the place       a document is looked for at the project root, in the
+ *                   governed directories, and in directories whose name says
+ *                   what they hold. A -vN.md file three levels down inside
+ *                   application code is somebody's working note; reporting it as
+ *                   an ungoverned deliverable is a guess dressed as a finding.
+ */
+const DOCUMENT_DIRECTORIES = new Set([
+  "doc", "docs", "documentation", "spec", "specs", "specification", "specifications",
+  "plan", "plans", "planning", "design", "designs", "decisions", "adr", "adrs",
+  "rfc", "rfcs", "requirements", "notes", "reference", "references", "handoff",
+  "deliverables", "proposals", "architecture",
+]);
+
+/** True when this path is somewhere a project document is expected to live. */
+function looksLikeProjectDocument(relative: string, governance: DocumentGovernance): boolean {
+  const segments = relative.split("/");
+  // At the project root: README-v2.md next to the code is a project document,
+  // and the repository's own files are excluded by name elsewhere.
+  if (segments.length === 1) return true;
+  if (governance.directories.some((directory) => directory && relative.startsWith(`${directory}/`))) return true;
+  return segments.slice(0, -1).some((segment) => DOCUMENT_DIRECTORIES.has(segment.toLowerCase()));
+}
 
 const VERSIONED_DOCUMENT = /-v\d+\.md$/i;
 
@@ -5520,6 +5625,13 @@ function unclaimedDocuments(root: string, state: State): UnclaimedDocument[] {
     const basename = path.basename(relative).replace(/\.md$/i, "").toLowerCase();
     if (UNGOVERNED_BASENAMES.has(basename)) continue;
     if (VERSIONED_DOCUMENT.test(relative)) {
+      // Two bounds this tier did not have, and both were false positives waiting
+      // to happen: a working file buried in application code is not a project
+      // deliverable, and a -vN.md that was in the folder before `init` is not an
+      // agent's mistake -- the second tier had always known that and this one
+      // had not.
+      if (!looksLikeProjectDocument(relative, governance)) continue;
+      if (preexisting.has(relative)) continue;
       found.push({ path: relative, tier: "versioned" });
       continue;
     }
@@ -5901,7 +6013,7 @@ function status(flags: Flags): void {
    * the machine output should not have to know the mapping.
    */
   const where = locateState(root);
-  console.log(JSON.stringify({ project: state.project.name, versions: versionProvenance(state), state_format: where.format, state_directory: where.name, project_mode: state.project.mode, interaction_mode: state.interaction_mode, lifecycle_state: state.lifecycle_state, current_gate: state.current_gate, coverage: `${state.modules.filter((item) => new Set(["CONFIRMED", "DEFERRED", "NOT APPLICABLE"]).has(item.status)).length}/${state.modules.length}`, active_module: active && { id: active.id, title: active.title, status: active.status }, needs_reconciliation: state.needs_reconciliation, open_overrides: state.human_overrides.filter((item) => item.status === "OPEN").length, ...blockerAssurance(state), module_progress: moduleProgressJson(state), progress_forecast: statusForecast(state), standing_notices: noticeSummary(root), exact_next_action: state.exact_next_action, updated_at: state.updated_at }, null, 2));
+  console.log(JSON.stringify({ project: state.project.name, versions: versionProvenance(state), state_format: where.format, state_directory: where.name, project_mode: state.project.mode, interaction_mode: state.interaction_mode, question_block_size: questionBlockSize(state), lifecycle_state: state.lifecycle_state, current_gate: state.current_gate, coverage: `${state.modules.filter((item) => new Set(["CONFIRMED", "DEFERRED", "NOT APPLICABLE"]).has(item.status)).length}/${state.modules.length}`, active_module: active && { id: active.id, title: active.title, status: active.status }, needs_reconciliation: state.needs_reconciliation, open_overrides: state.human_overrides.filter((item) => item.status === "OPEN").length, ...blockerAssurance(state), module_progress: moduleProgressJson(state), progress_forecast: statusForecast(state), standing_notices: noticeSummary(root), advance_blocked_by: advanceHold(root, state), exact_next_action: state.exact_next_action, updated_at: state.updated_at }, null, 2));
 }
 
 /**
@@ -6115,8 +6227,20 @@ function missingPrerequisites(state: State, moduleId: number): number[] {
 function nextQuestions(state: State, requestedCount?: string | boolean): string {
   const active = activeModule(state);
   if (!active) return "Questionnaire coverage complete. Next: approve the research/synthesis gate.\n";
-  const count = requestedCount ? Number(requestedCount) : (({ Guided: 1, Standard: 2, Expert: 3 } as any)[state.interaction_mode] ?? 2);
-  if (![1, 2, 3].includes(count)) throw new PlangonautError("--count must be 1, 2, or 3");
+  /*
+   * A block, not a quota.
+   *
+   * This used to hand back one, two or three questions depending on the
+   * interaction mode, and refuse anything else -- which read as though the mode
+   * decided how much interviewing a project was allowed. It does not. The mode
+   * is about depth and tone; the number of questions an interview needs comes
+   * from the gaps in it, and there are as many blocks as it takes.
+   *
+   * Five is the default block because it is what a person can hold in view and
+   * answer in one sitting. `--count` moves it, and the skill asks the user what
+   * they want and honours the answer.
+   */
+  const count = requestedCount ? parseBlockSize(requestedCount, "--count") : questionBlockSize(state).effective;
   const catalog = questionnaire().find((item: any) => item.id === active.id);
   /*
    * A catalog question the ledger already answers is marked, not printed clean.
@@ -6184,8 +6308,62 @@ function nextQuestions(state: State, requestedCount?: string | boolean): string 
  * founding principle, because the fraction counts only confirmations and nothing
  * had been confirmed.
  */
+/*
+ * Recording the block size, and why it takes a flag of its own.
+ *
+ * `--count 3` is somebody asking for three questions this once. Letting that
+ * silently become the project's standing preference is how a folder ends up
+ * asserting a choice nobody made -- the defect this whole cycle is about, in
+ * miniature. So an occasional count changes nothing, and `--remember` is the
+ * sentence "this is how we work from now on", with an owner and an operation id
+ * like every other thing a person decides here.
+ *
+ * It is the shape the engine already has for a command that reads until told
+ * otherwise: `replay --repair`, `recover --apply`. No new command, no settings
+ * file, and `plangonaut next` on its own still writes nothing.
+ */
+function rememberQuestionBlockSize(root: string, flags: Flags): void {
+  if (!nonEmpty(flags.count)) {
+    throw new PlangonautError(
+      `--remember needs the size to remember: pass --count N as well. Nothing was written.`
+    );
+  }
+  const size = parseBlockSize(flags.count, "--count");
+  const key = idempotencyKey(flags);
+  if (checkIdempotency(root, key)) return console.log("Idempotent retry: the question block size is already recorded.");
+  const { location, state } = loadState(root);
+  const owner = required(flags, "owner").trim();
+  assertKnownOwner(state, owner);
+
+  const before = questionBlockSize(state);
+  const timestamp = now();
+  (state as any).question_block_size = size;
+  state.updated_at = timestamp;
+  const revision = state.revision + 1;
+  const eventId = crypto.randomUUID();
+  state.revision = revision;
+  state.last_event_id = eventId;
+  commitState(root, location, state, {
+    event_id: eventId,
+    type: "QUESTION_BLOCK_SIZE_SET",
+    state_revision: revision,
+    at: timestamp,
+    idempotency_key: key,
+    owner,
+    question_block_size: size,
+    // What it was, including "nothing was recorded", so the history says whether
+    // this was a first choice or a change of mind.
+    previous_question_block_size: before.recorded ? before.effective : null,
+  });
+  console.log(
+    `Recorded: the interview puts ${size} question${size === 1 ? "" : "s"} in a block, at revision ${revision}.\n` +
+    `This is how many are laid out at once. It does not limit how many blocks the interview has.`
+  );
+}
+
 function next(flags: Flags): void {
   const root = resolveProject(required(flags, "project-root"));
+  if (flags.remember === true) return rememberQuestionBlockSize(root, flags);
   const state = validateRoot(root);
   if (state.needs_reconciliation) {
     const open = state.human_overrides.find((item) => item.status === "OPEN");
@@ -6196,6 +6374,10 @@ function next(flags: Flags): void {
   const progress = moduleProgress(state);
   const open = openInterviewEntries(state);
   const lines: string[] = [];
+
+  // Before any question, what the project already contradicts about itself.
+  const hold = advanceHoldLines(advanceHold(root, state));
+  if (hold.length) lines.push(...hold, "");
 
   // 1. An answer received and not applied. Nothing else may start first: that is
   //    already `qa-ask`'s refusal, and `next` should not propose what qa-ask
@@ -6649,6 +6831,62 @@ function ledgerCoherenceFindings(root: string, state: State): string[] {
 
   findings.push(...unprovenancedApprovals(state));
   return findings;
+}
+
+/*
+ * Everything that makes "carry on as normal" the wrong thing to say.
+ *
+ * The synthetic pilot put the case plainly: module 1 was CONFIRMED over two of
+ * its own open questions and an approval nobody could trace, `handoff-check`
+ * refused the folder, `validate --strict` failed -- and `next`, `status` and the
+ * recorded action all said "Discuss module 2". Each was individually correct and
+ * together they invited an agent to build on a foundation the same tool had just
+ * refused. A tool that knows better and says nothing where the reader is looking
+ * is the defect this cycle is about.
+ *
+ * So one list, computed from the same findings `validate --strict` fails on, and
+ * shown first everywhere a next step is offered. It never refuses: the way out
+ * is to resolve the contradiction or to downgrade the claim -- NOT_APPLICABLE
+ * and DEFERRED are honest, and PROPOSED is always available -- and both of those
+ * are writes.
+ */
+function advanceHoldFromState(state: State): string[] {
+  const findings: string[] = [];
+  for (const module of state.modules ?? []) {
+    if (String(module.status).toUpperCase() !== "CONFIRMED") continue;
+    for (const blocker of moduleConfirmationBlockers(state, module.id)) {
+      findings.push(`module ${module.id} is CONFIRMED, and ${blocker}`);
+    }
+  }
+  findings.push(...unprovenancedApprovals(state));
+  return findings;
+}
+
+/** The same, plus what only a look at the folder can tell. */
+function advanceHold(root: string, state: State): string[] {
+  const findings = advanceHoldFromState(state);
+  try {
+    findings.push(...unclaimedDocumentReport(root, state).findings);
+  } catch {
+    // A folder that cannot be walked is not a reason to withhold the rest.
+  }
+  return findings;
+}
+
+/** The block every command prints before it offers a next step. */
+function advanceHoldLines(findings: string[]): string[] {
+  if (!findings.length) return [];
+  return [
+    `FIRST: ${findings.length} recorded contradiction${findings.length === 1 ? "" : "s"} ${findings.length === 1 ? "stands" : "stand"} between this project and any next step.`,
+    ...findings.map((line) => `- ${line}`),
+    `Resolve them, or downgrade the claim that is not true yet: a module can be NOT_APPLICABLE or DEFERRED with its reason, and a decision can be PROPOSED.`,
+    `plangonaut validate --strict fails on this list, and plangonaut handoff-check refuses the folder while it stands.`,
+  ];
+}
+
+/** The recorded sentence, when the ledger contradicts itself. */
+function advanceHoldAction(count: number): string {
+  return `Resolve ${count} recorded contradiction${count === 1 ? "" : "s"} before continuing; plangonaut validate --strict lists them.`;
 }
 
 /** A state that predates the ledger gets the empty one, in memory, on read. */
@@ -7311,32 +7549,29 @@ function qaAsk(flags: Flags): void {
   if (clash) throw new PlangonautError(duplicateQuestionRefusal(clash));
 
   /*
-   * `ASKED` means the question was put to somebody. It is not a synonym for
-   * "written down".
+   * `PLANNED`, `ASKED`, `ANSWERED` and settled are four different things, and
+   * the engine keeps them four.
    *
-   * An agent can record a dozen questions as ASKED and show none of them, and
-   * the folder then says a dozen questions are waiting on a user who never saw
-   * one. The engine cannot watch the conversation, but it knows how many
-   * questions a turn is allowed to contain — the interaction mode says so — and
-   * a question can only have been shown in a turn.
+   *   PLANNED    written down, intended, not put to anybody.
+   *   ASKED      put to the user. `asked_at` records when the agent says so.
+   *   ANSWERED   an answer came back and is recorded.
+   *   settled    `ANSWERED` with `consequences_recorded_at` -- the answer has
+   *              been applied to the records it changes. It is a timestamp and
+   *              not a status word on purpose: only the command that applies can
+   *              write it, so no caller can declare it.
    *
-   * So the number of questions that are ASKED and unanswered at once cannot
-   * exceed that limit. Beyond it, record the question as `--planned`, which is
-   * exactly what planned means: intended, not yet put.
+   * What the engine cannot do is prove the third-party fact behind `ASKED`. It
+   * does not see the conversation; it records the agent's own statement of
+   * intention and the order things happened in. An earlier revision inferred
+   * presentation from a per-turn arithmetic and refused past it. That was wrong
+   * twice over: it proved nothing it claimed to prove, and it capped the total
+   * size of an interview that is required to be exhaustive. It is gone.
+   *
+   * Presentation is the skill's: it puts questions in blocks, five by default
+   * and as many as the user asks for, and an interview runs as many blocks as
+   * the gaps need. See `nextQuestions` for the engine side of a block, which is
+   * a default and not a limit.
    */
-  if (flags.planned !== true) {
-    const perTurn = ({ Guided: 1, Standard: 2, Expert: 3 } as Record<string, number>)[state.interaction_mode] ?? 2;
-    const waiting = interviewLog(state).filter((entry) => entry.status === "ASKED");
-    if (waiting.length >= perTurn) {
-      throw new PlangonautError(
-        `${waiting.length} question${waiting.length === 1 ? " is" : "s are"} already ASKED and unanswered ` +
-        `(${waiting.map((entry) => entry.id).join(", ")}), and ${state.interaction_mode} puts at most ${perTurn} to the user in a turn.\n` +
-        `ASKED means the question was shown to somebody; it is not a synonym for "written down". If you have not put this one yet, record it as intended:\n` +
-        `  plangonaut qa-ask --project-root . --id ${id} --question "..." --rationale "..." --owner <owner> --planned --operation-id <id>\n` +
-        `Otherwise record what came back for the open one${waiting.length === 1 ? "" : "s"} first, or close ${waiting.length === 1 ? "it" : "them"} with qa-close. Nothing was written.`
-      );
-    }
-  }
   const entry = newInterviewEntry(state, entryInputFromFlags(state, flags, id, flags.planned === true), at);
   /*
    * "Reconstructed from durable evidence" was an unverified self-declaration:
@@ -7977,6 +8212,17 @@ function resume(flags: Flags): void {
   // recorded exact next action is the authority; these are catalog prompts, and
   // the heading now says which is which.
   const integrity: string[] = [];
+  /*
+   * Above everything a reader treats as a plan, and deliberately so: this
+   * is the one thing on the page that says the plan below rests on
+   * something the project itself contradicts.
+   */
+  const holdFindings = advanceHold(root, state);
+  if (holdFindings.length) {
+    integrity.push("## Resolve this before continuing", "");
+    for (const line of advanceHoldLines(holdFindings)) integrity.push(line.startsWith("- ") ? line : `${line}`);
+    integrity.push("");
+  }
   if (recovered.length) {
     integrity.push("## An interrupted operation was recovered", "", "The last run of Plangonaut on this project did not finish. It has been resolved before anything below was read:", "");
     for (const line of recovered) integrity.push(`- ${line}`);
@@ -8052,9 +8298,23 @@ function applyModuleOutcome(
     updated_at: at,
   });
   const active = activeModule(state);
+  /*
+   * The recorded action does not step over the project's own contradictions.
+   *
+   * Written after `record --status CONFIRMED`, this is the sentence a fresh
+   * recipient is told to obey. Offering the next module while the module just
+   * confirmed disagrees with its own ledger is how a folder comes to read as
+   * settled -- and a person's recorded sentence is still never overwritten, which
+   * `advanceGeneratedNextAction` decides, not this.
+   */
+  // The same list `next`, `resume` and `status` show, so one session never
+  // reports two different counts of the same contradictions.
+  const hold = advanceHold(root, state);
   const nextActionNote = advanceGeneratedNextAction(
     state,
-    active ? `Discuss module ${active.id} — ${active.title}.` : "Review coverage, then proceed to G2.",
+    hold.length
+      ? advanceHoldAction(hold.length)
+      : active ? `Discuss module ${active.id} — ${active.title}.` : "Review coverage, then proceed to G2.",
   );
   return { module, outcome, nextActionNote, confirmationBlockers };
 }
@@ -10706,12 +10966,58 @@ const COMMAND_HELP: Record<string, string> = {
     `plangonaut next — what to work on, and why that before the rest.`,
     ``,
     `  --project-root DIR     the project`,
-    `  --count 1|2|3          how many questions to propose (default: by interaction mode)`,
+    `  --count N              how many questions in this block (1-20)`,
+    `  --remember             record that size as the project's own, from now on`,
+    `  --owner NAME           with --remember: one of the five recorded owners`,
+    `  --operation-id ID      with --remember: 3-128 characters, unique per operation`,
+    ``,
+    `A block is how many questions are laid out at once. It is not how many an`,
+    `interview may have: an interview runs as many blocks as the gaps need, and`,
+    `ends when every applicable module is confirmed, deferred or recorded as not`,
+    `applicable — never because a count ran out.`,
+    ``,
+    `Without --count it uses the size the project recorded, or 5 if nobody has set`,
+    `one. --count on its own is this block only and changes nothing; --remember is`,
+    `how a preference is stated, so asking for three once never quietly becomes the`,
+    `way the project works. Without --remember this command writes nothing.`,
     ``,
     `It reads the interview ledger before the questionnaire, so a question already`,
     `answered is not proposed again, and a question already planned is proposed as`,
     `itself rather than replaced by a catalogue one. It also reports where the`,
-    `interview has been digging and which modules nothing has touched.`,
+    `interview has been digging and which modules nothing has touched, and names`,
+    `any recorded contradiction before it offers a next step.`,
+  ].join("\n"),
+  "handoff-check": [
+    `plangonaut handoff-check — is this folder enough for somebody who was not here?`,
+    ``,
+    `  --project-root DIR     the project`,
+    `  --json                 the report as data`,
+    ``,
+    `validate asks whether the record is sound. This asks the other question, and`,
+    `a project can pass the first for months while failing the second. Blocking`,
+    `findings are things that would stop a recipient; advisory ones are worth`,
+    `knowing. It exits 2 when anything is blocking.`,
+    ``,
+    `What it looks at, when it reports a document nobody is governing:`,
+    ``,
+    `  only Markdown          an ordinary source file, a lockfile, an asset or a`,
+    `                         build artifact is never reported, whatever it is`,
+    `                         named and wherever it sits.`,
+    `  not other people's     node_modules, vendor, third_party, dist, build, out,`,
+    `                         target, coverage, caches, temporary directories and`,
+    `                         anything beginning with a dot are not walked.`,
+    `  where documents live   the project root, the governed directories, and`,
+    `                         directories whose name says what they hold — docs,`,
+    `                         specs, plans, decisions, adr, requirements and the`,
+    `                         like. A working file inside application code is`,
+    `                         somebody's note, not an ungoverned deliverable.`,
+    `  not what was here      Markdown that existed when the project was`,
+    `                         initialised is the repository's, not the plan's.`,
+    `  not what you excluded  plangonaut govern --exclude records a deliberate`,
+    `                         exception with its reason, and it is respected.`,
+    ``,
+    `Repository files — README, CHANGELOG, LICENSE, CONTRIBUTING and their usual`,
+    `companions — are never reported, at any depth.`,
   ].join("\n"),
 };
 
@@ -10721,7 +11027,7 @@ function commandHelp(command: string): string | null {
 
 function help(): void {
   console.log("Mutation requirements: pass --operation-id OP-ID to every mutating command. For doc-save, first run doc-diff and pass its confirmation_token as --confirm-token TOKEN.\nAny command takes --help for its own options and, where there is one, its full flow: plangonaut doc-save --help.\n");
-  console.log(`Plangonaut ${VERSION}\n\nUsage: plangonaut <command> [options]\n\nAlmost every command that changes the project requires --operation-id <unique-id>,\n3 to 128 characters. It is how a retried command is recognised as the same operation\nrather than applied twice, so it is required rather than generated, and it is omitted\nfrom the lines below only because it belongs to nearly all of them.\n\nThe exception is migrate-brand. It carries its own migration id and its own receipt,\nand is resumed or rolled back by that id rather than retried under an operation id, so\nit neither requires nor uses one. --operation-id is accepted there, as it is on every\ncommand, and has no effect.\n\nThe first command needs an owners file. It is one JSON object with these five keys,\neach naming the person accountable for that kind of decision:\n\n  {\"product\":\"Ada\",\"technical\":\"Ada\",\"budget\":\"Ada\",\"safety\":\"Ada\",\"release\":\"Ada\"}\n\nSave it anywhere and pass its path to --owners-file; the same person may hold more\nthan one role. An unknown key is refused, and so is a missing or empty one. What the\nroles mean, and when they matter, is in skills/plangonaut/references/user-guide.md.\n\nCommands:\n  capabilities\n  init --project-root . --project-name NAME --project-mode Resume --interaction-mode Standard --owners-file owners.json\n  status --project-root .\n  next --project-root . [--count 1|2|3]\n  resume --project-root .\n  record --project-root . --module N --status CONFIRMED --answer-file FILE --owner NAME\n  decision --project-root . --id DEC-ID --title TEXT --status APPROVED --owner NAME [--expected-revision N]\n  requirement --project-root . --id REQ-ID --title TEXT --status ACTIVE --owner NAME [--expected-revision N]\n  task --project-root . --id TSK-ID --title TEXT --status READY --owner NAME [--expected-revision N]\n  dependency --project-root . --id DEP-ID --from REQ-ID --to TSK-ID --type REQUIRES --owner NAME [--expected-revision N]\n  risk --project-root . --id RSK-ID --title TEXT --severity HIGH --status IDENTIFIED --owner NAME [--expected-revision N]\n  evidence --project-root . --id EVD-ID --file FILE --owner NAME [--expected-revision N]\n  agent --project-root . --id AGT-ID --name TEXT --status ACTIVE --owner NAME [--expected-revision N]\n  checkpoint --project-root . --id CHK-ID --name TEXT --owner NAME [--next-action TEXT] [--expected-revision N]\n  blocker-record --project-root . --id BLK-ID --title TEXT --reason TEXT --owner NAME [--evidence-file FILE] [--expected-revision N]\n  blocker-resolve --project-root . --id BLK-ID --resolution TEXT --owner NAME --expected-revision N [--evidence-file FILE]\n  blocker-verify-none --project-root . --owner NAME [--note TEXT]   (records that somebody looked and found none open)\n  override --project-root . --instruction-file FILE --owner NAME [--reason TEXT]\n  re-record --project-root . --kind override|gate --id OVR-ID|G2 --source-file FILE --owner NAME --reason TEXT\n  reconcile --project-root . --override-id ID --evidence-file FILE --owner NAME [--next-action TEXT] [--replace-human-next-action]\n  forecast --project-root . --owner NAME --phase TEXT --known-work TEXT --conditional-work TEXT --questions MIN-MAX --operations MIN-MAX --cycles MIN-MAX --confidence ALTA|MEDIA|BASSA --confidence-reason TEXT --cycle-state REGOLARE|IN_ESPANSIONE|RISCHIO_LOOP|BLOCCATO [--change-reason TEXT: required from the second forecast on, refused on the first] [--expected-revision N]\n  forecast --project-root .    (reads the recorded forecast; ranges only, never a percentage)\n  gate --project-root . --id G2 --status PASSED --evidence-file FILE --owner NAME\n  doc-diff --project-root . --id ART-123 --base-path docs/design.md --content-file temp.md --owner NAME [--expected-revision N --expected-hash HASH]\n  doc-mark-deletion --project-root . --id ART-123 --target TEXT --reason-file FILE --content-file FILE --owner NAME [--expected-revision N --expected-hash HASH]\n  doc-save --project-root . --id ART-123 --base-path docs/design.md --content-file temp.md --owner NAME --confirm-token TOKEN [--sources DEC-1] [--expected-revision N --expected-hash HASH]\n  doc-history --project-root . --id ART-123\n  doc-restore --project-root . --id ART-123 --revision N --owner NAME [--expected-revision N --expected-hash HASH]\n  doc-finalize --project-root . --id ART-123 --owner NAME [--expected-revision N --expected-hash HASH] [--accept-base-overwrite]\n  qa-ask --project-root . --id QNA-0001 --question TEXT --rationale TEXT --owner NAME [--module N] [--agent NAME] [--planned]
+  console.log(`Plangonaut ${VERSION}\n\nUsage: plangonaut <command> [options]\n\nAlmost every command that changes the project requires --operation-id <unique-id>,\n3 to 128 characters. It is how a retried command is recognised as the same operation\nrather than applied twice, so it is required rather than generated, and it is omitted\nfrom the lines below only because it belongs to nearly all of them.\n\nThe exception is migrate-brand. It carries its own migration id and its own receipt,\nand is resumed or rolled back by that id rather than retried under an operation id, so\nit neither requires nor uses one. --operation-id is accepted there, as it is on every\ncommand, and has no effect.\n\nThe first command needs an owners file. It is one JSON object with these five keys,\neach naming the person accountable for that kind of decision:\n\n  {\"product\":\"Ada\",\"technical\":\"Ada\",\"budget\":\"Ada\",\"safety\":\"Ada\",\"release\":\"Ada\"}\n\nSave it anywhere and pass its path to --owners-file; the same person may hold more\nthan one role. An unknown key is refused, and so is a missing or empty one. What the\nroles mean, and when they matter, is in skills/plangonaut/references/user-guide.md.\n\nCommands:\n  capabilities\n  init --project-root . --project-name NAME --project-mode Resume --interaction-mode Standard --owners-file owners.json\n  status --project-root .\n  next --project-root . [--count N]                       (one block; default 5, or what the project recorded)\n  next --project-root . --count N --remember --owner NAME  (record that block size as the project's own)\n  resume --project-root .\n  record --project-root . --module N --status CONFIRMED --answer-file FILE --owner NAME\n  decision --project-root . --id DEC-ID --title TEXT --status APPROVED --owner NAME [--expected-revision N]\n  requirement --project-root . --id REQ-ID --title TEXT --status ACTIVE --owner NAME [--expected-revision N]\n  task --project-root . --id TSK-ID --title TEXT --status READY --owner NAME [--expected-revision N]\n  dependency --project-root . --id DEP-ID --from REQ-ID --to TSK-ID --type REQUIRES --owner NAME [--expected-revision N]\n  risk --project-root . --id RSK-ID --title TEXT --severity HIGH --status IDENTIFIED --owner NAME [--expected-revision N]\n  evidence --project-root . --id EVD-ID --file FILE --owner NAME [--expected-revision N]\n  agent --project-root . --id AGT-ID --name TEXT --status ACTIVE --owner NAME [--expected-revision N]\n  checkpoint --project-root . --id CHK-ID --name TEXT --owner NAME [--next-action TEXT] [--expected-revision N]\n  blocker-record --project-root . --id BLK-ID --title TEXT --reason TEXT --owner NAME [--evidence-file FILE] [--expected-revision N]\n  blocker-resolve --project-root . --id BLK-ID --resolution TEXT --owner NAME --expected-revision N [--evidence-file FILE]\n  blocker-verify-none --project-root . --owner NAME [--note TEXT]   (records that somebody looked and found none open)\n  override --project-root . --instruction-file FILE --owner NAME [--reason TEXT]\n  re-record --project-root . --kind override|gate --id OVR-ID|G2 --source-file FILE --owner NAME --reason TEXT\n  reconcile --project-root . --override-id ID --evidence-file FILE --owner NAME [--next-action TEXT] [--replace-human-next-action]\n  forecast --project-root . --owner NAME --phase TEXT --known-work TEXT --conditional-work TEXT --questions MIN-MAX --operations MIN-MAX --cycles MIN-MAX --confidence ALTA|MEDIA|BASSA --confidence-reason TEXT --cycle-state REGOLARE|IN_ESPANSIONE|RISCHIO_LOOP|BLOCCATO [--change-reason TEXT: required from the second forecast on, refused on the first] [--expected-revision N]\n  forecast --project-root .    (reads the recorded forecast; ranges only, never a percentage)\n  gate --project-root . --id G2 --status PASSED --evidence-file FILE --owner NAME\n  doc-diff --project-root . --id ART-123 --base-path docs/design.md --content-file temp.md --owner NAME [--expected-revision N --expected-hash HASH]\n  doc-mark-deletion --project-root . --id ART-123 --target TEXT --reason-file FILE --content-file FILE --owner NAME [--expected-revision N --expected-hash HASH]\n  doc-save --project-root . --id ART-123 --base-path docs/design.md --content-file temp.md --owner NAME --confirm-token TOKEN [--sources DEC-1] [--expected-revision N --expected-hash HASH]\n  doc-history --project-root . --id ART-123\n  doc-restore --project-root . --id ART-123 --revision N --owner NAME [--expected-revision N --expected-hash HASH]\n  doc-finalize --project-root . --id ART-123 --owner NAME [--expected-revision N --expected-hash HASH] [--accept-base-overwrite]\n  qa-ask --project-root . --id QNA-0001 --question TEXT --rationale TEXT --owner NAME [--module N] [--agent NAME] [--planned]
   qa-answer --project-root . --id QNA-0001 --answer-file FILE --owner NAME [--agent NAME]
   qa-settle --project-root . --id QNA-0001 --interpretation TEXT --reply-file FILE --owner NAME [--consequences DEC-1,REQ-2] [--documents docs/a.md] [--open-points TEXT] [--next-id QNA-0002] [--next-question TEXT]
   qa-close --project-root . --id QNA-0001 --kind deferred|skipped|invalidated --reason TEXT --owner NAME
