@@ -7683,7 +7683,7 @@ function executionReadiness(state: State): Readiness {
     findings.push(`no tasks are recorded, so nothing states what to do.`);
   } else if (!implementation.length && administrative.length === tasks.length) {
     findings.push(
-      `all ${tasks.length} recorded task${tasks.length === 1 ? " is" : "s are"} administrative (${administrative.map((task) => task.id).join(", ")}). ` +
+      `${tasks.length === 1 ? "the only recorded task is administrative" : `all ${tasks.length} recorded tasks are administrative`} (${administrative.map((task) => task.id).join(", ")}). ` +
       `Arranging for work is not the same as the work: nothing here builds the thing the requirements describe.`
     );
   } else if (!implementation.length && unkinded.length) {
