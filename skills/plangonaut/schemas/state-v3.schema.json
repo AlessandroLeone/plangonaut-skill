@@ -353,6 +353,64 @@
           "updated_at": {
             "type": "string",
             "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "$comment": "IMPLEMENTATION, ADMINISTRATIVE, RESOLUTION, VERIFICATION... Absent means nobody recorded it, which is not the same as administrative."
+          },
+          "requirements": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "decisions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "component": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "acceptance": {
+            "type": "string"
+          },
+          "verification": {
+            "type": "string"
+          },
+          "evidence_expected": {
+            "type": "string"
+          },
+          "parallelizable": {
+            "type": "boolean"
+          },
+          "handoff": {
+            "type": "string"
+          },
+          "estimate": {
+            "type": "string"
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "risks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       }
@@ -599,6 +657,30 @@
           "updated_at": {
             "type": "string",
             "minLength": 1
+          },
+          "role": {
+            "type": "string"
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "owns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "authority": {
+            "type": "string"
+          },
+          "integrator": {
+            "type": "boolean"
+          },
+          "reviewer": {
+            "type": "boolean"
           }
         }
       }
@@ -1097,6 +1179,162 @@
           ],
           "$comment": "Markdown present when the project was initialised, so that adopting a repository with existing documentation does not report it as an agent's mistake. `null` means nobody recorded it, which is why only the high-precision `-vN` signal applies to such a project.",
           "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "execution_intent": {
+      "$comment": "Whether this project is to be built. Declared by a human authority; never inferred from the absence of tasks.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "mode",
+        "reason",
+        "declared_by",
+        "declared_at"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "DEFINITION_ONLY",
+            "EXECUTION"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "declared_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "declared_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation_id": {
+          "type": "string"
+        }
+      }
+    },
+    "execution_organization": {
+      "$comment": "The approved organisation of whoever executes the work. One executor still records reviewer, concurrency and handoff.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "executors",
+        "mode",
+        "reviewer",
+        "concurrency",
+        "handoff",
+        "approved_by",
+        "approved_at"
+      ],
+      "properties": {
+        "executors": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "integrator": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "concurrency": {
+          "type": "string",
+          "minLength": 1
+        },
+        "handoff": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approved_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approved_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation_id": {
+          "type": "string"
+        }
+      }
+    },
+    "reads": {
+      "$comment": "Files somebody read and built on, with the digest that makes the record evidence rather than a claim.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "path",
+          "sha256",
+          "read_at",
+          "agent",
+          "purpose",
+          "owner",
+          "revision",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^RDR-[0-9]{4,}$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "read_at": {
+            "type": "string",
+            "minLength": 1
+          },
+          "agent": {
+            "type": "string",
+            "minLength": 1
+          },
+          "purpose": {
+            "type": "string",
+            "minLength": 1
+          },
+          "conclusions": {
+            "type": "string"
+          },
+          "used_by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "updated_at": {
             "type": "string",
             "minLength": 1
           }

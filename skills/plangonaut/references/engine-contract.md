@@ -732,3 +732,38 @@ anything new is asked.
 Overrides record changed intent and require semantic reconciliation. Reconciliation evidence must describe work actually performed, not merely be an arbitrary file. Preserve superseded decisions, affected work and authority. The same agent may continue or a new one may resume.
 
 State/event divergence and unsupported versions remain visible. Back up before explicit migration or recovery. Structural checks, semantic review and actual execution establish distinct kinds of evidence.
+
+## Execution readiness, intent, organisation and readings
+
+Four commands, all additive. A project written before them carries none of their
+data and stays valid; its readiness reports `NOT ASSESSED` rather than a guess.
+
+```
+execution-readiness --project-root . [--json]
+execution-intent    --project-root . --execution|--definition-only --reason TEXT --owner NAME --operation-id ID
+execution-org       --project-root . --executors N --mode TEXT --reviewer NAME --concurrency TEXT --handoff TEXT
+                                     [--integrator NAME] --owner NAME --operation-id ID
+read-record         --project-root . --path FILE --purpose TEXT [--agent NAME] [--conclusions TEXT]
+                                     [--used-by IDS] --owner NAME --operation-id ID
+```
+
+`task` accepts, all optional: `--kind`, `--requirements`, `--decisions`,
+`--component`, `--role`, `--acceptance`, `--verification`, `--evidence-expected`,
+`--parallelizable`, `--handoff`, `--estimate`, `--inputs`, `--outputs`, `--risks`.
+An id given to `--requirements`, `--decisions` or `--risks` that no record answers
+to is refused: an origin naming nothing reads as coverage and is worse than none.
+
+`agent` accepts `--role`, `--skills`, `--owns`, `--authority`, `--is-integrator`,
+`--is-reviewer`.
+
+`execution-org` refuses an organisation with no reviewer, and one with more than
+one executor and no integrator. Neither refusal is about size.
+
+State fields added, all optional: `execution_intent`, `execution_organization`,
+`reads`, and the task and agent fields above. Nothing became required, no existing
+field changed meaning, and no migration is needed.
+
+**Reading commands never write.** `status`, `resume`, `validate` and
+`handoff-check` compute readiness on every call and store nothing: a readiness
+written into the state would be a claim that ages, which is the defect this
+closes.

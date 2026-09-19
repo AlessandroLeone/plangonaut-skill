@@ -135,7 +135,7 @@ enforces them as a cap.
 
 **A block is five, and an interview is as many blocks as it needs.** Put five
 questions in a turn by default; ask the user what they would rather have, and
-record their answer with `plangonaut next --count N --remember`, so the agent
+record their answer with `plangonaut next --project-root . --count N --remember --owner <owner> --operation-id <id>`, so the agent
 after you reads it in the folder rather than not at all. `--count N` on its own
 sizes one block and records nothing. The interview ends when every applicable
 module is `CONFIRMED`, `DEFERRED` or `NOT APPLICABLE` with a recorded reason --

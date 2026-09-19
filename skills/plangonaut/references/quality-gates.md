@@ -94,3 +94,64 @@ Before declaring the project or milestone complete, verify:
 - recovery and rollback viability;
 - reproducibility from a clean environment;
 - user approval of the delivered outcome.
+
+## Execution readiness
+
+A deterministic check, separate from integrity and separate from the definition.
+`plangonaut execution-readiness --project-root . [--json]` answers it, and
+`status`, `resume`, `next`, `validate --strict`, the context pack, the forecast
+and `handoff-check` all carry the same verdict, computed once so they cannot
+disagree.
+
+Four verdicts, and the difference between the last two matters:
+
+| Verdict | Meaning |
+|---|---|
+| `PASSED` | the work can be picked up |
+| `FAILED` | something named below stops anybody starting |
+| `NOT REQUESTED` | the project is declared definition-only |
+| `NOT ASSESSED` | nobody has declared whether it is to be built |
+
+`NOT ASSESSED` never becomes `NOT REQUESTED` by inference. A project that is
+merely unfinished is indistinguishable from a deliberate study, and guessing is
+the original defect.
+
+It fails when, for example:
+
+- the project is to be built and no implementation work exists — a plan made
+  entirely of administrative tasks arranges for work without being it;
+- tasks record no kind, so nothing can tell whether any of them builds anything;
+- approved requirements have no task;
+- work cannot be picked up as written: no acceptance criterion, no requirement or
+  decision of origin, no responsible role, no verification or evidence;
+- the organisation of whoever executes has not been approved;
+- several executors are approved with no integrator, or none with a reviewer;
+- the approved organisation does not say how concurrent changes are prevented, or
+  when work is handed over;
+- dependencies contain a cycle;
+- an open risk has no owner;
+- no exact next action is recorded, so the folder does not say how to begin.
+
+**It does not fail for being a one-person project, and does not fail for not
+being software.** No check requires agents, Git, repositories or tests: a roofing
+project with one executor, one requirement, one construction task with a witnessed
+acceptance test and a named surveyor passes.
+
+**There is no task-count threshold anywhere in it.** Three tasks can be a complete
+plan for a small project; a hundred generic ones are a hundred restatements of an
+intention. Coverage decides.
+
+## Modules 14, 15 and 16
+
+Enforced by refusal rather than warning, because these three labels are what a
+recipient trusts most.
+
+- **14** may be `NOT APPLICABLE` only when no team and no second executor are
+  needed, and the single executor's responsibility must still be recorded first.
+  `CONFIRMED` requires an approved organisation.
+- **15** requires a work breakdown, a milestone or gate, dependencies where there
+  is more than one task, at least one risk, acceptance criteria, verifications,
+  and recorded responsibility.
+- **16** is refused while the definition is incomplete, while execution readiness
+  fails on a project that requested it, while the execution intent is undeclared,
+  while decisions remain `PROPOSED`, or while an override is unreconciled.

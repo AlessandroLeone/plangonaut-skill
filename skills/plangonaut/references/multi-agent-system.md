@@ -4,6 +4,41 @@ This reference describes a future agent system that Plangonaut may recommend and
 
 Design the organization as carefully as the project. Multiple agents are optional. The output is reviewed prompts, roles, permissions, dependencies, contracts, handoffs and execution instructions for the same agent or another runtime after initialization and within authorization.
 
+
+## Proposing the organisation
+
+Plangonaut proposes; the user approves. Never ask the user to invent the number
+of executors from nothing — that is the analysis the tool has the information to
+do and they do not.
+
+The order is fixed:
+
+1. complete the preliminary decomposition;
+2. identify skills, dependencies and genuine parallelism;
+3. propose a motivated configuration;
+4. explain its costs and the alternatives;
+5. ask the user to approve or amend it;
+6. record the answer;
+7. only then finalise the plan of responsibilities.
+
+The proposal states: the recommended minimum number of executors; the roles;
+the skills each requires; the responsibilities; the authority each holds;
+the components or work packages each owns outright; the dependencies between
+them; the sequence; what may genuinely run in parallel; who integrates; who
+reviews; the rule that prevents concurrent modification of the same thing; and
+the conditions under which work is handed over.
+
+**A single-executor project fills in all of it.** "One" answers how many and
+leaves every other question standing. The engine refuses an organisation with no
+reviewer, and refuses one with several executors and no integrator: two correct
+halves are not one working thing, and nothing in the folder would say whose job
+it is to make them so.
+
+Record the approved outcome with `plangonaut execution-org`. Until it exists,
+execution readiness fails and module 14 cannot be confirmed — nor recorded
+`NOT APPLICABLE`, which means "no team and no second executor is needed" and
+never "nobody asked".
+
 ## Topology selection
 
 | Situation | Recommended topology |

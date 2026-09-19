@@ -80,3 +80,43 @@ Every must-have requirement across the agreed outcome maps forward to artifacts,
 No template is required to run Plangonaut, and none is a source of truth. What a document must contain is defined by the contracts, not by a file of headings: the blueprint by [coverage-contract.md](coverage-contract.md) and [execution-package.md](execution-package.md) together with the information roles above; the state document by [lifecycle.md](lifecycle.md) for position and gate, by coverage-contract.md for the COV-001 register and the readiness category, and by [interview-protocol.md](interview-protocol.md) for the operational forecast; the agent system by [multi-agent-system.md](multi-agent-system.md). A document written from those is complete whether or not a template was used.
 
 The installed skill distribution carries three optional starting files under its `assets/` directory — a blueprint, a project-state and an agent-system outline — which save typing and nothing else. They are deliberately not obligatory here, because the distributions do not all carry them: the Portable Semantic Edition is a single Markdown file with no `assets/` directory, and an instruction to open a file the reader does not have is an instruction that cannot be followed. If `assets/` is present, adapt those files after the user approves artifact paths and depth. If it is not, write the documents from the contracts above; nothing is missing.
+
+## The chain that has to be verifiable before execution
+
+```
+approved requirement
+  -> pertinent decision
+  -> deliverable or component
+  -> task
+  -> acceptance criterion
+  -> test or verification
+  -> expected evidence
+  -> responsible party
+```
+
+A task may cover several requirements and a requirement may need several tasks.
+The relation is many-to-many and the check is coverage, never a count.
+
+Reported when missing: approved requirements with no task; tasks with no
+requirement or decision of origin; tasks with no responsible party; tasks with no
+acceptance criterion; tasks with no evidence; components with no work package;
+risks with no mitigation or owner; circular dependencies; administrative activity
+presented as a construction plan; overlapping responsibilities with no integrator.
+
+The number of decisions or documents never compensates for missing operational
+coverage. A project can hold eighty-two decisions and be unable to start.
+
+Recorded on the task itself, all optional and never defaulted: `kind`,
+`requirements`, `decisions`, `component`, `role`, `acceptance`, `verification`,
+`evidence_expected`, `parallelizable`, `handoff`, `estimate`, `inputs`, `outputs`,
+`risks`. An absent field reports as `NOT ASSESSED`; the engine does not invent one.
+
+## Provenance of readings
+
+A reading a plan rests on is recorded with `plangonaut read-record`: path, digest,
+moment, agent, purpose, conclusions and the records that use it. `resume`
+distinguishes four standings — read and proved, changed since it was read, cited
+but unverified, and no evidence at all.
+
+Never state that a file was never read when a valid record exists, and never state
+that it was read because an earlier turn said so. The digest is the difference.

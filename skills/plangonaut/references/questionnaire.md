@@ -162,8 +162,33 @@ These are starting lenses, not exhaustive domain checklists. Add disciplines and
 
 ## 14. Human team and multi-agent organization
 
+**Ask this module when the goal includes building the thing. It is not optional,
+and module 16 cannot be confirmed while it is unanswered.** Adapt every question
+to the domain: a building project has trades, a manufacturing line has shifts, an
+organisational change has departments. Do not impose repositories, branches,
+software or AI agents on a project that has none.
+
+**Propose the configuration; do not ask the user to invent it.** The order is:
+complete the preliminary decomposition, identify the skills, dependencies and
+real parallelism, put a motivated proposal with its costs and alternatives, ask
+for approval or amendment, record the answer, and only then finalise the plan of
+responsibilities. Asking "how many agents do you want?" before the decomposition
+asks the user to do the analysis the tool exists to do. The proposal's contents
+are in [multi-agent-system.md](multi-agent-system.md).
+
 - Who participates, with what expertise, availability, authority, and review responsibility?
-- Is one agent sufficient, or do independent domains justify multiple agents?
+- Is one executor sufficient, or do independent domains justify more? *(One is a complete answer, and it does not make the rest of this module optional: a single executor still has a reviewer, checkpoints, handoffs and stop conditions.)*
+- Will the work be done by people, by agents, or by both?
+- Is the same agent continuing, or does a fresh executor receive the folder?
+- What autonomy is granted, and which actions always require approval?
+- What is the maximum parallelism, and what constrains it?
+- What constraints apply to models, tools, costs and environments?
+- Who is responsible for architecture, for implementation, for verification, and for independent review?
+- Who integrates the parts, and how are conflicts and concurrent changes handled?
+- Which repositories, branches or worktrees apply, *when the project has any*?
+- What checkpoints, communication and handoff procedures exist?
+- How is a scope change proposed, approved, costed and recorded?
+- Under what conditions is work suspended or reassigned?
 - Should the topology be Lead+Advisor, Orchestrator+Workers, specialist pipeline, or hybrid?
 - Which roles need stronger models or higher reasoning effort, and what are the cost/latency limits?
 - Which agents may read/write which files, invoke which tools, access which networks, and communicate externally?
@@ -173,6 +198,21 @@ These are starting lenses, not exhaustive domain checklists. Add disciplines and
 
 ## 15. Planning, milestones, risks, and success
 
+**Cannot be confirmed without a work breakdown, milestones, dependencies, risks,
+success criteria, responsibilities and verifications.** The label is not the
+point: the module records that the plan exists, and a confirmed module 15 over an
+empty plan is the defect this cycle closed.
+
+Every deliverable or approved component decomposes into work somebody can
+actually pick up. `implement the app`, `build the registry`, `make the interface`
+and `run the tests` are not tasks — they are the project restated. There is no
+minimum count: three tasks can be a complete plan for a small project and a
+hundred can be insufficient for a large one. What decides it is coverage, and the
+required fields per work item are in [execution-package.md](execution-package.md).
+
+- What must be true before execution can start, and what evidence closes each task?
+- What build, distribution, installation or commissioning is needed?
+- What operation, maintenance and subsequent responsibility follow delivery?
 - What is the complete agreed outcome and its terminal acceptance? What phases, including the first milestone, are needed to reach it?
 - Which requirements, decisions, dependencies, experiments, and risks precede it?
 - What phase granularity fits the project and the agent context limits?
@@ -185,6 +225,12 @@ These are starting lenses, not exhaustive domain checklists. Add disciplines and
 - What inputs, resources, responsibilities, outputs, verification, recovery and escalation does each executable work item require?
 
 ## 16. Final blueprint review
+
+**Refused while any of these holds:** the definition is incomplete; execution was
+requested and its readiness fails; the handoff package is not self-sufficient;
+blocking decisions remain; the final human review is not recorded. The engine
+enforces this — `record --module 16 --status CONFIRMED` refuses and writes
+nothing — because a confirmed module 16 is the sentence a recipient trusts most.
 
 - Does the blueprint accurately reflect the user's intent in their own language?
 - Are assumptions, deferred decisions, rejected options, and non-goals visible?

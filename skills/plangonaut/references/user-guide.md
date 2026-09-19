@@ -425,3 +425,77 @@ After consequential changes, record the override, inspect affected work and reco
 Base Studio is a local desktop app with clean IDE-style navigation, manual Markdown editing and faithful tree/graph/timeline analysis. File integrity and existing relationship views do not certify semantic consistency. Assisted cross-document review, change-impact analysis and reconciliation are future subscription workflows, not prerequisites for Plangonaut or execution.
 
 Initialization does not launch future project agents. Execution authority, capabilities, physical actors, professional approvals and completion evidence remain explicit in the package.
+
+## Is it defined, or is it ready?
+
+Plangonaut keeps these apart, because they are different questions and a project
+routinely passes the first while failing the second.
+
+**Definition** — is the project understood? Problem, users, scope, constraints,
+requirements, decisions, risks, expected result.
+
+**Execution readiness** — has that been turned into work somebody can pick up?
+Units with an owner, an order, an acceptance criterion and evidence.
+
+**Handoff readiness** — can somebody who was not in the conversation start and
+finish from this folder alone?
+
+Ask at any time:
+
+```
+plangonaut execution-readiness --project-root .
+```
+
+`status`, `resume`, `next`, `validate`, the context pack and `handoff-check` all
+carry the same answer.
+
+### If you only want the definition
+
+A study, a proposal, a concept note, a tender, a feasibility analysis — these are
+finished when the definition is finished, and Plangonaut will not nag you for a
+plan you never wanted. Say so once:
+
+```
+plangonaut execution-intent --project-root . --definition-only --reason "The deliverable is the study" --owner Ada --operation-id op-intent-1
+```
+
+It will then say, and keep saying:
+
+```
+Definition complete.
+Execution readiness not requested.
+This folder is not an execution package.
+```
+
+Plangonaut will never conclude this on its own from the fact that you have no
+tasks: a project that is merely unfinished looks exactly the same.
+
+### If it is to be built
+
+```
+plangonaut execution-intent --project-root . --execution --reason "The product is to be built" --owner Ada --operation-id op-intent-1
+```
+
+Now the operational questions have to be answered before the final review: who
+does the work, with what autonomy, in what order, who reviews it, and how anyone
+knows a piece is done. Plangonaut proposes the shape of the team — you approve or
+change it, you do not invent it from nothing — and the approved answer is recorded:
+
+```
+plangonaut execution-org --project-root . --executors 1 --mode human --reviewer Ada --concurrency "one person, one file at a time" --handoff "at each milestone" --owner Ada --operation-id op-org-1
+```
+
+One person is a complete answer to "how many". It does not make the rest
+optional: you still have a reviewer, a handoff and a point at which work stops.
+
+### Recording what you read
+
+When a plan rests on a document you read, record the reading. The digest is what
+turns "I read it" into something checkable later:
+
+```
+plangonaut read-record --project-root . --path docs/survey.md --purpose "the basis of the layout" --agent claude --conclusions "The south wall cannot carry load" --owner Ada --operation-id op-read-1
+```
+
+`resume` then tells you which files were read and still match, which changed
+after they were read, which are only cited, and where there is no evidence at all.

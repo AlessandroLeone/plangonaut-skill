@@ -501,7 +501,10 @@ test("every mutating example in the public documentation is complete and runnabl
       // Some commands only mutate under a flag: `replay` reads, `replay --repair`
       // writes. Requiring the operation id of the reading form would teach the
       // opposite of what this check is for.
-      const gate = { replay: "repair", recover: "apply" }[command];
+      // `next` reads; `next --remember` writes the block size. Without it here,
+      // every prose mention of the reading form was reported as an incomplete
+      // mutation, which is the check firing on correct documentation.
+      const gate = { replay: "repair", recover: "apply", next: "remember" }[command];
       const mutates = mutating.has(command) && (!gate || used.includes(gate));
       if (mutates && !used.includes("operation-id")) {
         problems.push(`${relative}: \`plangonaut ${command}\` is a mutating command and the example has no --operation-id`);

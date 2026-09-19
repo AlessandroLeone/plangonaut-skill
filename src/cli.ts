@@ -231,7 +231,65 @@ interface Override {
 interface Decision { id: string; title: string; status: string; owner: string; revision: number; updated_at: string; }
 interface Requirement { id: string; title: string; status: string; owner: string; revision: number; updated_at: string; }
 interface Artifact { id: string; base_path: string; working_path: string; status: string; revision: number; content_hash: string; lock_owner: string; provenance: string[]; }
-interface Task { id: string; title: string; status: string; owner: string; revision: number; updated_at: string; }
+/**
+ * A task, and everything a task needs before somebody who was not here can do it.
+ *
+ * The four required fields are the record as it shipped and they stay required.
+ * Everything below them is optional, and has to be: a project written under
+ * alpha.5 carries none of it, and inventing a value for a field nobody filled
+ * would be worse than reporting that it is missing. Absent means **not
+ * assessed**, which is what every reader of this record prints.
+ *
+ * Why the fields are these fields. The pilot held 82 decisions, 33 requirements
+ * and three tasks, all administrative, and every command called it healthy —
+ * because a task was a title and a status, and a title cannot tell anybody what
+ * the work is for, who does it, or how anyone would know it was done. These are
+ * the columns that turn a list of intentions into a thing that can be executed
+ * and checked.
+ */
+interface Task {
+  id: string;
+  title: string;
+  status: string;
+  owner: string;
+  revision: number;
+  updated_at: string;
+  /**
+   * What kind of work this is.
+   *
+   * The distinction the pilot needed and did not have. `ADMINISTRATIVE` is not
+   * a lesser status — setting up a repository is real work — but a plan made
+   * entirely of it is not a plan to build anything, and nothing could say so.
+   * Absent is not `ADMINISTRATIVE`: it is unknown, and is reported as unknown.
+   */
+  kind?: string;
+  /** Requirement ids this task exists to satisfy. */
+  requirements?: string[];
+  /** Decision ids that determine how it is done. */
+  decisions?: string[];
+  /** The component, area or work package it belongs to. */
+  component?: string;
+  /** The role accountable for doing it, from the approved organisation. */
+  role?: string;
+  /** What has to be true for this to be finished. */
+  acceptance?: string;
+  /** How that is checked. */
+  verification?: string;
+  /** What the check leaves behind. */
+  evidence_expected?: string;
+  /** Whether it may run beside its siblings. */
+  parallelizable?: boolean;
+  /** What is handed to whom when it is done. */
+  handoff?: string;
+  /** Relative size, in whatever unit the project chose. */
+  estimate?: string;
+  /** Inputs it needs before it can start. */
+  inputs?: string[];
+  /** What it produces. */
+  outputs?: string[];
+  /** Risk ids it carries. */
+  risks?: string[];
+}
 interface Dependency { id: string; from: string; to: string; type: string; owner: string; revision: number; updated_at: string; }
 interface Gate {
   id: string;
@@ -250,8 +308,62 @@ interface Gate {
 }
 interface Risk { id: string; title: string; severity: string; status: string; owner: string; revision: number; updated_at: string; }
 interface Evidence { id: string; path: string; sha256: string; owner: string; revision: number; updated_at: string; }
-interface Agent { id: string; name: string; status: string; owner: string; revision: number; updated_at: string; }
+/**
+ * An executor: a person, an organisation, or an agent.
+ *
+ * Named `Agent` because the ledger is, and the ledger is not renamed for a
+ * project that builds a bridge. What it records is who does a piece of the work
+ * and what they are allowed to do, which is the same question in software and
+ * out of it.
+ */
+interface Agent {
+  id: string;
+  name: string;
+  status: string;
+  owner: string;
+  revision: number;
+  updated_at: string;
+  /** What this executor is for, in the approved organisation. */
+  role?: string;
+  /** What they are competent to do. */
+  skills?: string[];
+  /** Components or work packages they own outright. */
+  owns?: string[];
+  /** What they may decide without asking. */
+  authority?: string;
+  /** Whether this executor integrates others' work. */
+  integrator?: boolean;
+  /** Whether this executor reviews others' work. */
+  reviewer?: boolean;
+}
 interface Operation { id: string; type: string; status: string; }
+
+/**
+ * One file, read once, by somebody, for a reason.
+ *
+ * `sha256` is what makes this evidence rather than a claim: the file can be
+ * re-hashed later and the record either still describes it or demonstrably does
+ * not. That is the whole difference between "I read it" and "this was read, and
+ * here is what it said at the time".
+ */
+interface ReadRecord {
+  id: string;
+  /** Project-relative. A read of something outside the folder is recorded as such. */
+  path: string;
+  sha256: string;
+  read_at: string;
+  /** Who did the reading: an agent id, a model name, or a person. */
+  agent: string;
+  /** Why it was read. A read with no purpose is a file access, not evidence. */
+  purpose: string;
+  /** What was concluded from it. */
+  conclusions?: string;
+  /** Records that rest on this read. */
+  used_by?: string[];
+  owner: string;
+  revision: number;
+  updated_at: string;
+}
 interface Checkpoint { id: string; name: string; owner: string; revision: number; created_at: string; updated_at: string; }
 
 /**
@@ -434,6 +546,69 @@ interface State {
     exclusions: string[];
     preexisting: string[] | null;
   };
+  /**
+   * Whether this project is meant to be built, declared rather than guessed.
+   *
+   * A feasibility study, a concept note, a tender document and a proposal are
+   * all finished work, and none of them has tasks, roles or an integration
+   * plan. A project that is merely unfinished looks identical from the outside.
+   * The engine cannot tell those two apart and must not try: absence of tasks
+   * is evidence of nothing, and inferring "they must have meant definition
+   * only" is precisely how the pilot came to be called complete.
+   *
+   * So it is recorded, by a human authority, with a reason, through
+   * `execution-intent`. Absent means nobody has said, which is reported as
+   * `NOT DECLARED` and is the state every alpha.5 project is in.
+   */
+  execution_intent?: {
+    /** `DEFINITION_ONLY` or `EXECUTION`. */
+    mode: string;
+    reason: string;
+    declared_by: string;
+    declared_at: string;
+    operation_id: string;
+  } | null;
+  /**
+   * The approved organisation of whoever does the work.
+   *
+   * Recorded only after a human approves it. The proposal is the skill's job —
+   * it has read the decomposition and can see which work is independent — and
+   * the approval is the user's. What is stored is the outcome of that exchange,
+   * so that `status` can say the plan of responsibilities is settled without
+   * anybody having to remember the conversation.
+   *
+   * A single executor still fills this in. "One agent" answers the question of
+   * how many, and leaves every other question — who reviews, when work is
+   * handed over, what stops — exactly where it was.
+   */
+  execution_organization?: {
+    /** How many executors the approved shape has. */
+    executors: number;
+    /** Human, agents, or both. */
+    mode: string;
+    /** The id of the executor that integrates, or null when one person does everything. */
+    integrator: string | null;
+    /** The id of the executor that reviews, or null with the reason recorded. */
+    reviewer: string | null;
+    /** How concurrent writes are prevented. */
+    concurrency: string;
+    /** When work passes from one executor to another. */
+    handoff: string;
+    approved_by: string;
+    approved_at: string;
+    operation_id: string;
+  } | null;
+  /**
+   * Files somebody read and built on.
+   *
+   * The pilot produced a turn in which the agent stated it had read two files
+   * in full, and a later turn in which it stated nobody had ever read them.
+   * Both were assertions about the past with nothing behind them, and the
+   * project had no way to prefer one. A read that a plan rests on is a fact
+   * about the project, and facts about the project belong in the ledger with a
+   * digest, like every other.
+   */
+  reads?: ReadRecord[];
   human_overrides: Override[];
   needs_reconciliation: boolean;
   revision: number;
@@ -489,7 +664,7 @@ function parseBlockSize(value: unknown, option: string): number {
   return count;
 }
 
-const BOOLEAN_FLAGS = new Set(["dry-run", "resume", "discard-changes", "accept-base-overwrite", "replace-human-next-action", "planned", "reconstructed", "regenerate", "open", "last", "json", "verify", "repair", "apply", "force", "crosscutting", "strict", "help", "migrate-backups", "remember"]);
+const BOOLEAN_FLAGS = new Set(["dry-run", "resume", "discard-changes", "accept-base-overwrite", "replace-human-next-action", "planned", "reconstructed", "regenerate", "open", "last", "json", "verify", "repair", "apply", "force", "crosscutting", "strict", "help", "migrate-backups", "remember", "definition-only", "execution", "parallelizable", "is-integrator", "is-reviewer"]);
 
 /** Line separator used where a template literal would be harder to read. */
 const NL = "\n";
@@ -552,6 +727,12 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   validate: ["project-root", "strict"],
   "migrate-backups": ["project-root", "apply"],
   "handoff-check": ["project-root", "json"],
+  // The three states of completeness, and the two things a project records
+  // about how it will be executed.
+  "execution-readiness": ["project-root", "json"],
+  "execution-intent": ["project-root", "definition-only", "execution", "reason", "owner", "operation-id"],
+  "execution-org": ["project-root", "executors", "mode", "integrator", "reviewer", "concurrency", "handoff", "owner", "operation-id"],
+  "read-record": ["project-root", "path", "purpose", "agent", "conclusions", "used-by", "owner", "operation-id"],
   govern: ["project-root", "exclude", "include", "reason", "owner", "operation-id"],
   migrate: ["project-root", "operation-id"],
   "migrate-brand": ["project-root", "dry-run", "resume", "rollback", "discard-changes"],
@@ -597,11 +778,13 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   gate: ["project-root", "id", "status", "evidence-file", "owner", "consequence", "review-date", "operation-id"],
   decision: ["project-root", "id", "title", "name", "status", "severity", "owner", "from", "to", "type", "file", "next-action", "provenance-override", "provenance-note", "expected-revision", "operation-id"],
   requirement: ["project-root", "id", "title", "name", "status", "severity", "owner", "from", "to", "type", "file", "next-action", "expected-revision", "operation-id"],
-  task: ["project-root", "id", "title", "name", "status", "severity", "owner", "from", "to", "type", "file", "next-action", "expected-revision", "operation-id"],
+  // Everything after `next-action` is optional and is what turns a title
+  // into work somebody who was not here can pick up.
+  task: ["project-root", "id", "title", "name", "status", "severity", "owner", "from", "to", "type", "file", "next-action", "kind", "requirements", "decisions", "component", "role", "acceptance", "verification", "evidence-expected", "parallelizable", "handoff", "estimate", "inputs", "outputs", "risks", "expected-revision", "operation-id"],
   dependency: ["project-root", "id", "title", "name", "status", "severity", "owner", "from", "to", "type", "file", "next-action", "expected-revision", "operation-id"],
   risk: ["project-root", "id", "title", "name", "status", "severity", "owner", "from", "to", "type", "file", "next-action", "expected-revision", "operation-id"],
   evidence: ["project-root", "id", "title", "name", "status", "severity", "owner", "from", "to", "type", "file", "next-action", "expected-revision", "operation-id"],
-  agent: ["project-root", "id", "title", "name", "status", "severity", "owner", "from", "to", "type", "file", "next-action", "expected-revision", "operation-id"],
+  agent: ["project-root", "id", "title", "name", "status", "severity", "owner", "from", "to", "type", "file", "next-action", "role", "skills", "owns", "authority", "is-integrator", "is-reviewer", "expected-revision", "operation-id"],
   checkpoint: ["project-root", "id", "title", "name", "status", "severity", "owner", "from", "to", "type", "file", "next-action", "expected-revision", "operation-id"],
   // A preview takes exactly what the save it previews takes. The intended
   // workflow is "run doc-diff with the arguments you are about to run doc-save
@@ -3545,11 +3728,86 @@ const FORECAST_NEVER_RECORDED =
   `No progress forecast has ever been recorded for this project. That is not zero remaining work, not a default and not a measurement: nothing was recorded.`;
 
 /** The forecast block shown by `resume`, `context-pack` and any other reader of the pack. */
+/**
+ * What is left, split by what kind of work it is.
+ *
+ * The forecast used to count questions, operations and cycles. The pilot's
+ * forecast was therefore encouraging: the questions were nearly done. What it
+ * could not express is that the entire operational plan — the decomposition,
+ * the responsibilities, the acceptance criteria — had not been started, and
+ * that no number of remaining interview questions describes that.
+ *
+ * So the operational work is counted separately and never folded into the
+ * question count. A project four questions from the end of its definition and
+ * with no plan under it is not four questions from the end.
+ */
+function operationalRemainder(state: State): Record<string, unknown> {
+  const readiness = readinessReport(state);
+  const tasks = state.tasks ?? [];
+  const requirements = state.requirements ?? [];
+  const covered = new Set<string>();
+  for (const task of tasks) for (const id of task.requirements ?? []) covered.add(String(id).toUpperCase());
+  const approved = new Set(["ACTIVE", "CONFIRMED", "APPROVED"]);
+
+  const modules = state.modules ?? [];
+  const operationalModules = [14, 15].filter((id) => {
+    const module = modules.find((item: any) => item.id === id);
+    return module !== undefined && !MODULE_SETTLED.has(String(module.status).toUpperCase());
+  });
+  const definitionModules = DEFINITION_MODULES.filter((id) => {
+    const module = modules.find((item: any) => item.id === id);
+    return module !== undefined && !MODULE_SETTLED.has(String(module.status).toUpperCase());
+  });
+
+  return {
+    definition_modules_open: definitionModules,
+    operational_modules_open: operationalModules,
+    requirements_without_task: requirements.filter(
+      (requirement) => approved.has(String(requirement.status).toUpperCase()) && !covered.has(String(requirement.id).toUpperCase())
+    ).length,
+    tasks_without_acceptance: tasks.filter((task) => !nonEmpty(task.acceptance)).length,
+    tasks_without_evidence: tasks.filter((task) => !nonEmpty(task.verification) && !nonEmpty(task.evidence_expected)).length,
+    organization_decided: Boolean(state.execution_organization),
+    execution_intent: readiness.intent === "UNDECLARED" ? "NOT DECLARED" : readiness.intent === "NO" ? "DEFINITION_ONLY" : "EXECUTION",
+    definition_readiness: readiness.definition.verdict,
+    execution_readiness: readiness.execution.verdict,
+  };
+}
+
+/** The same split, in the words a person reads. */
+function operationalRemainderLines(state: State): string[] {
+  const remainder = operationalRemainder(state) as any;
+  const lines = [
+    "",
+    "## What is left, by kind",
+    "",
+    `- Definition modules still open: ${remainder.definition_modules_open.length ? remainder.definition_modules_open.join(", ") : "none"}`,
+    `- Operational modules still open (14, 15): ${remainder.operational_modules_open.length ? remainder.operational_modules_open.join(", ") : "none"}`,
+    `- Approved requirements with no task: ${remainder.requirements_without_task}`,
+    `- Tasks with no acceptance criterion: ${remainder.tasks_without_acceptance}`,
+    `- Tasks with no verification or evidence: ${remainder.tasks_without_evidence}`,
+    `- Organisation of executors approved: ${remainder.organization_decided ? "yes" : "no"}`,
+    `- Definition: ${remainder.definition_readiness}`,
+    `- Execution readiness: ${remainder.execution_readiness}`,
+  ];
+  if (remainder.execution_readiness === "FAILED" || remainder.execution_readiness === "NOT ASSESSED") {
+    lines.push(
+      "",
+      `The end is not near while this list is not empty, whatever the question count above says:`,
+      `a project can be four questions from the end of its definition and have no plan under it at all.`,
+    );
+  }
+  return lines;
+}
+
 function forecastMarkdown(state: State, historyEntries = 0): string[] {
   const entry = state.progress_forecast;
   const lines = ["## Progress forecast", ""];
   if (!entry) {
     lines.push(`- ${FORECAST_NEVER_RECORDED}`, `- Record one with: ${FORECAST_RECORD_COMMAND}`, "");
+    // Even with no recorded forecast, the operational remainder is countable
+    // from the ledger, and it is the half the pilot needed.
+    lines.push(...operationalRemainderLines(state), "");
     return lines;
   }
   lines.push(
@@ -3572,6 +3830,7 @@ function forecastMarkdown(state: State, historyEntries = 0): string[] {
   } else {
     lines.push("- Derived loop signals: none in the recorded data.");
   }
+  lines.push(...operationalRemainderLines(state));
   if (!entry.derived.status_history_events && ((state.tasks ?? []).length || (state.risks ?? []).length)) {
     lines.push(
       `- Reopening signals are not observable in this project: no ledger event recorded the status of the record it changed, so the engine cannot see whether a task or risk returned to an earlier status. Absence of that signal here is not evidence of absence.`
@@ -3850,6 +4109,28 @@ function contextMarkdown(state: State, forecastHistoryEntries = 0): string {
     `- Mode: ${state.project.mode}`,
     `- Lifecycle: ${state.lifecycle_state}`,
     `- Gate: ${state.current_gate}`,
+    /*
+     * The three states, at the top of the pack.
+     *
+     * The context pack is what a recipient reads first and sometimes only, so a
+     * folder that is not an execution package has to say so here rather than
+     * twenty lines down. The pilot's pack read as a finished project because
+     * nothing in it distinguished a settled definition from a plan.
+     */
+    ...(() => {
+      const report = readinessReport(state);
+      const lines = [
+        `- Execution intent: ${report.intent === "UNDECLARED" ? "NOT DECLARED — nobody has said whether this is to be built" : report.intent === "NO" ? "DEFINITION_ONLY" : "EXECUTION"}`,
+        `- Definition: ${report.definition.verdict === "PASSED" ? "substantially complete" : "incomplete"}`,
+        `- Execution readiness: ${report.execution.verdict}`,
+      ];
+      if (report.intent === "NO") {
+        lines.push(`- This folder is not an execution package, and is not meant to be one.`);
+      } else if (report.execution.verdict === "FAILED") {
+        lines.push(`- ${report.execution.findings.length} thing${report.execution.findings.length === 1 ? "" : "s"} stop${report.execution.findings.length === 1 ? "s" : ""} anybody from starting; plangonaut execution-readiness --project-root . lists them.`);
+      }
+      return lines;
+    })(),
     `- Interaction: ${state.interaction_mode}`,
     // Here rather than further down, because this is read instead of the
     // conversation the preference was stated in. A fresh agent that misses this
@@ -5101,6 +5382,50 @@ function handoffCheck(flags: Flags): void {
   if (!state.requirements.length) blocking.push(`no requirements are recorded, so nothing states what the result has to do.`);
   if (!state.decisions.length) blocking.push(`no decisions are recorded, so nothing states what was chosen or why.`);
   if (!state.tasks.length) blocking.push(`no tasks are recorded, so nothing states what to do first.`);
+
+  /*
+   * 4b. Is the work executable, and is anybody accountable for it?
+   *
+   * The check this command was missing. A folder holding eighty-two decisions
+   * and three administrative tasks satisfied every line above it — there *are*
+   * requirements, there *are* decisions, there *are* tasks — and could not be
+   * executed by anybody, because nothing in it said what to build, who builds
+   * it, or how they would know they had.
+   *
+   * It is skipped entirely when the project has declared that it is not to be
+   * built. A feasibility study with no integration plan is not defective.
+   */
+  const readiness = readinessReport(state);
+  if (readiness.intent === "YES") {
+    for (const finding of readiness.execution.findings) blocking.push(finding);
+  } else if (readiness.intent === "UNDECLARED") {
+    blocking.push(
+      `nobody has declared whether this project is meant to be built, so this check cannot say whether an execution plan is missing or deliberately absent. ` +
+      `Record it: plangonaut execution-intent --project-root . --execution|--definition-only --reason "<why>" --owner <owner> --operation-id <id>.`
+    );
+  } else {
+    advisory.push(
+      `this project is recorded DEFINITION_ONLY (${state.execution_intent?.reason ?? "no reason recorded"}), so execution readiness was not assessed. ` +
+      `This folder is not an execution package, and is not expected to be one.`
+    );
+  }
+
+  // 4c. Two documents saying the same thing, one of them governed.
+  for (const finding of duplicateDocumentFindings(root, state)) blocking.push(finding);
+
+  // 4d. Reads a plan rests on that no longer describe the file.
+  for (const entry of readStandings(root, state)) {
+    if (entry.standing === "PROVED") continue;
+    const dependents = (entry.record.used_by ?? []).join(", ");
+    if (entry.standing === "CHANGED SINCE") {
+      blocking.push(
+        `${entry.record.path} was read for ${entry.record.purpose} and has changed since${dependents ? `; ${dependents} rest${dependents.includes(",") ? "" : "s"} on that reading` : ""}. ` +
+        `The conclusions drawn from it may no longer hold. Re-read and record it, or record a decision that the change does not affect them.`
+      );
+    } else {
+      blocking.push(`${entry.record.path} was recorded as read and is no longer in the folder${dependents ? `; ${dependents} rest on it` : ""}.`);
+    }
+  }
   const assurance = blockerAssurance(state);
   if (assurance.blockers_assurance === "UNKNOWN") {
     advisory.push(`no blocker was ever recorded and nobody recorded finding none: plangonaut blocker-verify-none is how that absence is stated.`);
@@ -5159,10 +5484,20 @@ function handoffCheck(flags: Flags): void {
   advisory.push(...imbalanceLines(progress));
 
   if (flags.json === true) {
-    console.log(JSON.stringify({ deliverable: blocking.length === 0, blocking, advisory }, null, 2));
+    console.log(JSON.stringify({
+      deliverable: blocking.length === 0,
+      definition: readiness.definition.verdict,
+      execution_readiness: readiness.execution.verdict,
+      handoff_readiness: blocking.length ? "FAILED" : "PASSED",
+      execution_intent: readiness.intent === "UNDECLARED" ? "NOT DECLARED" : readiness.intent === "NO" ? "DEFINITION_ONLY" : "EXECUTION",
+      blocking,
+      advisory,
+    }, null, 2));
     if (blocking.length) reportedExitCode = 2;
     return;
   }
+  console.log(readinessLines(readiness, blocking.length ? "FAILED" : "PASSED").join("\n"));
+  console.log("");
   if (blocking.length) {
     console.log(`This folder is not ready to hand off. ${blocking.length} thing${blocking.length === 1 ? "" : "s"} would stop somebody who was not in the conversation:`);
     for (const line of blocking) console.log(`- ${line}`);
@@ -5672,6 +6007,120 @@ function unclaimedDocumentReport(root: string, state: State): { findings: string
   };
 }
 
+/**
+ * Directories whose copies are output, not documents.
+ *
+ * A build puts the same bytes in three places by design, and reporting each as
+ * a duplicate is how a check becomes noise somebody filters out. These are
+ * excluded by path rather than by guessing from content, because content is
+ * exactly what is identical in the legitimate case.
+ */
+const DERIVED_DIRECTORIES = /(^|\/)(dist|build|out|node_modules|target|\.git|coverage|vendor|assets\/generated)(\/|$)/i;
+
+/**
+ * Two files with the same content, when one of them is the record.
+ *
+ * The pilot had a governed document and an ungoverned copy of it, and nothing
+ * noticed. A recipient reading the folder finds both and has no way to know
+ * which one the project means — and the ledger *does* know, because one of them
+ * carries a digest and an artifact id and the other does not.
+ *
+ * So this never asks the user which to delete when the ledger can answer, and
+ * it never deletes anything: governed documents have a lifecycle
+ * (`doc-finalize`, and a superseded status that points at its replacement) and
+ * a check is not entitled to shortcut it.
+ */
+function duplicateDocumentFindings(root: string, state: State): string[] {
+  const findings: string[] = [];
+
+  const governed = new Map<string, string>(); // canonical path -> artifact id
+  for (const artifact of state.artifacts ?? []) {
+    for (const value of [artifact.working_path, artifact.base_path]) {
+      if (nonEmpty(value)) governed.set(canonicalRelative(String(value)), artifact.id);
+    }
+  }
+
+  const byDigest = new Map<string, string[]>();
+  const walk = (directory: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const absolute = path.join(directory, entry.name);
+      const relative = canonicalRelative(path.relative(root, absolute));
+      if (DERIVED_DIRECTORIES.test(relative)) continue;
+      if (entry.isDirectory()) {
+        walk(absolute);
+        continue;
+      }
+      if (!/\.(md|markdown|txt)$/i.test(entry.name)) continue;
+      let bytes: Buffer;
+      try {
+        bytes = fs.readFileSync(absolute);
+      } catch {
+        continue;
+      }
+      // Empty files are identical to each other and mean nothing by it.
+      if (!bytes.length) continue;
+      const digest = sha256(bytes);
+      const list = byDigest.get(digest) ?? [];
+      list.push(relative);
+      byDigest.set(digest, list);
+    }
+  };
+  walk(root);
+
+  for (const [, paths] of byDigest) {
+    if (paths.length < 2) continue;
+    const sorted = [...paths].sort();
+    const governedPaths = sorted.filter((item) => governed.has(item));
+    const ungoverned = sorted.filter((item) => !governed.has(item));
+
+    // One artifact's own paths are not a duplicate of each other.
+    const distinctArtifacts = new Set(governedPaths.map((item) => governed.get(item)));
+    if (distinctArtifacts.size === 1 && ungoverned.length) {
+      /*
+       * Named by artifact, not by path.
+       *
+       * One artifact can hold a base path and a working path, and picking
+       * whichever sorts first would make the message arbitrary — the engine
+       * would say `architecture-v1.md` today and `architecture.md` after a
+       * finalize, describing the same record both times.
+       */
+      const artifact = governed.get(governedPaths[0]);
+      const keep = governedPaths.join(" / ");
+      findings.push(
+        `${ungoverned.join(", ")} ${ungoverned.length === 1 ? "is a byte-for-byte copy" : "are byte-for-byte copies"} of ${keep}, which artifact ${artifact} governs. ` +
+        `A recipient finds both and cannot tell which one the project means; the ledger can, and it is ${artifact}. ` +
+        `Close it by archiving or reconciling the ${ungoverned.length === 1 ? "copy" : "copies"} — this check does not delete a governed document and does not ask which to keep, because the answer is recorded.`
+      );
+    } else if (governedPaths.length > 1 && new Set(governedPaths.map((item) => governed.get(item))).size > 1) {
+      /*
+       * Two artifacts, not one artifact's two paths.
+       *
+       * A governed document has a base path and a working path, and after a
+       * `doc-save` they hold the same bytes by construction — that is what
+       * saving means. Reporting that pair was the first thing this check did,
+       * and it is the kind of false positive that teaches a reader to skip the
+       * whole finding.
+       */
+      findings.push(
+        `${governedPaths.join(" and ")} hold identical content and are governed separately (${governedPaths.map((item) => governed.get(item)).join(", ")}). ` +
+        `Two records of one document will diverge the first time somebody edits the one they happened to open. Finalize one and supersede the other, preserving both histories.`
+      );
+    } else {
+      findings.push(
+        `${sorted.join(", ")} hold identical content and none of them is governed, so the project has two copies of something and no record of which is current.`
+      );
+    }
+  }
+
+  return findings;
+}
+
 function validateRoot(root: string, includeDocuments = false): State {
   const { state } = loadState(root);
   const errors = stateErrors(root, state);
@@ -5982,6 +6431,281 @@ function blockerVerifyNone(flags: Flags): void {
   console.log(`Recorded: ${owner} verified at revision ${revision} that no blocker is open.`);
 }
 
+/**
+ * Declare whether this project is meant to be built.
+ *
+ * A human authority's statement, recorded like any other. The engine will not
+ * infer it, and this is the command that exists so that it never has to: a
+ * feasibility study and an unfinished project are indistinguishable from the
+ * outside, and the only thing that can tell them apart is somebody saying so.
+ */
+function executionIntent(flags: Flags): void {
+  const root = resolveProject(required(flags, "project-root"));
+  const key = idempotencyKey(flags);
+  if (checkIdempotency(root, key)) return console.log("Idempotent retry: the execution intent is already recorded.");
+  const { location, state } = loadState(root);
+  assertNotBlocked(state);
+  const owner = required(flags, "owner").trim();
+  assertKnownOwner(state, owner);
+
+  const definitionOnly = flags["definition-only"] === true;
+  const execution = flags.execution === true;
+  if (definitionOnly === execution) {
+    throw new PlangonautError(
+      `Give exactly one of --definition-only or --execution.\n` +
+      `  --execution        the project is to be built, and execution readiness applies.\n` +
+      `  --definition-only  the deliverable is the definition itself: a study, a proposal, a concept note, a tender.\n` +
+      `Nothing was written.`,
+    );
+  }
+  const reason = required(flags, "reason").trim();
+  if (!reason) throw new PlangonautError(`--reason cannot be empty. A mode nobody explained is a mode nobody can question later.`);
+
+  const previous = state.execution_intent ?? null;
+  const mode = definitionOnly ? "DEFINITION_ONLY" : "EXECUTION";
+  const timestamp = now();
+  const eventId = crypto.randomUUID();
+  state.execution_intent = { mode, reason, declared_by: owner, declared_at: timestamp, operation_id: String(flags["operation-id"] ?? "") };
+  state.updated_at = timestamp;
+  const revision = state.revision + 1;
+  state.revision = revision;
+  state.last_event_id = eventId;
+  commitState(root, location, state, {
+    event_id: eventId,
+    type: "EXECUTION_INTENT_DECLARED",
+    state_revision: revision,
+    at: timestamp,
+    idempotency_key: key,
+    owner,
+    mode,
+    reason,
+    ...(previous ? { previous_mode: previous.mode } : {}),
+  });
+
+  if (previous && previous.mode !== mode) {
+    console.log(`Changed: ${previous.mode} -> ${mode}, by ${owner} at revision ${revision}.`);
+  } else {
+    console.log(`Recorded: ${mode}, by ${owner} at revision ${revision}.`);
+  }
+  if (mode === "DEFINITION_ONLY") {
+    console.log(`\nDefinition complete.\nExecution readiness not requested.\nThis folder is not an execution package.`);
+    console.log(`\nThat is a statement about intent, not about quality: the definition is still held to its own completeness.`);
+  } else {
+    console.log(`\nExecution readiness now applies. plangonaut execution-readiness --project-root . says where it stands.`);
+  }
+}
+
+/**
+ * Record the approved organisation of whoever executes the work.
+ *
+ * The proposal is not made here. A configuration is something to be *proposed*
+ * — by whoever has read the decomposition and can see what is independent of
+ * what — and then approved or changed by a person. Asking a user to invent the
+ * number of executors from nothing is asking them to do the analysis the tool
+ * was supposed to do. This command records the end of that exchange.
+ *
+ * One executor is a legitimate answer and does not make the rest optional. The
+ * questions of who reviews, when work is handed over and what stops it are the
+ * same questions with a smaller cast.
+ */
+function executionOrg(flags: Flags): void {
+  const root = resolveProject(required(flags, "project-root"));
+  const key = idempotencyKey(flags);
+  if (checkIdempotency(root, key)) return console.log("Idempotent retry: this organisation is already recorded.");
+  const { location, state } = loadState(root);
+  assertNotBlocked(state);
+  const owner = required(flags, "owner").trim();
+  assertKnownOwner(state, owner);
+
+  const executors = Number(required(flags, "executors"));
+  if (!Number.isInteger(executors) || executors < 1) {
+    throw new PlangonautError(`--executors must be a whole number of one or more. Nothing was written.`);
+  }
+  const mode = required(flags, "mode").trim();
+  const concurrency = required(flags, "concurrency").trim();
+  const handoff = required(flags, "handoff").trim();
+  const integrator = typeof flags.integrator === "string" ? String(flags.integrator).trim() : null;
+  const reviewer = typeof flags.reviewer === "string" ? String(flags.reviewer).trim() : null;
+
+  if (executors > 1 && !integrator) {
+    throw new PlangonautError(
+      `${executors} executors and no --integrator.\n` +
+      `Two executors producing correct halves is not one working thing, and nothing in the folder would say whose job it is to make it so.\n` +
+      `Name one, or record a single executor. Nothing was written.`,
+    );
+  }
+  if (!reviewer) {
+    throw new PlangonautError(
+      `--reviewer is missing.\n` +
+      `Somebody has to check the work, including when that somebody is the person who did it — in which case name them, and the folder records that review is unindependent rather than absent.\n` +
+      `Nothing was written.`,
+    );
+  }
+
+  const timestamp = now();
+  const eventId = crypto.randomUUID();
+  state.execution_organization = {
+    executors,
+    mode,
+    integrator: integrator || null,
+    reviewer,
+    concurrency,
+    handoff,
+    approved_by: owner,
+    approved_at: timestamp,
+    operation_id: String(flags["operation-id"] ?? ""),
+  };
+  state.updated_at = timestamp;
+  const revision = state.revision + 1;
+  state.revision = revision;
+  state.last_event_id = eventId;
+  commitState(root, location, state, {
+    event_id: eventId,
+    type: "EXECUTION_ORGANIZATION_APPROVED",
+    state_revision: revision,
+    at: timestamp,
+    idempotency_key: key,
+    owner,
+    executors,
+    mode,
+  });
+  console.log(`Recorded: ${executors} executor${executors === 1 ? "" : "s"} (${mode}), approved by ${owner} at revision ${revision}.`);
+  if (executors === 1) {
+    console.log(`\nOne executor still has a plan: ${reviewer} reviews, and work is handed over ${handoff}.`);
+  }
+}
+
+/**
+ * Record that a file was read, and what was concluded from it.
+ *
+ * The pilot produced one turn in which the agent said it had read two files in
+ * full, and a later turn in which it said nobody had ever read them. Both were
+ * claims about the past, neither had anything behind it, and the project had no
+ * way to prefer one over the other.
+ *
+ * The digest is what makes this different from a claim. A recorded read can be
+ * checked against the file as it is now: still the same, changed since, or
+ * gone. `resume` reports which, and none of the three is "the agent said so".
+ */
+function readRecord(flags: Flags): void {
+  const root = resolveProject(required(flags, "project-root"));
+  const key = idempotencyKey(flags);
+  if (checkIdempotency(root, key)) return console.log("Idempotent retry: this read is already recorded.");
+  const { location, state } = loadState(root);
+  assertNotBlocked(state);
+  const owner = required(flags, "owner").trim();
+  assertKnownOwner(state, owner);
+
+  const relative = canonicalRelative(required(flags, "path"));
+  const absolute = path.resolve(root, relative);
+  if (!absolute.startsWith(path.resolve(root))) {
+    throw new PlangonautError(`${relative} is outside the project. A read of something the recipient cannot open is not evidence about this folder. Nothing was written.`);
+  }
+  if (!fs.existsSync(absolute)) {
+    throw new PlangonautError(`${relative} does not exist, so it was not read. Nothing was written.`);
+  }
+  const digest = sha256(fs.readFileSync(absolute));
+  const purpose = required(flags, "purpose").trim();
+  if (!purpose) throw new PlangonautError(`--purpose cannot be empty. A read with no purpose is a file access, not evidence.`);
+  const agent = typeof flags.agent === "string" ? String(flags.agent).trim() : owner;
+  const conclusions = typeof flags.conclusions === "string" ? String(flags.conclusions).trim() : "";
+  const usedBy = typeof flags["used-by"] === "string" ? String(flags["used-by"]).split(",").map((item) => item.trim().toUpperCase()).filter(Boolean) : [];
+
+  const known = knownRecordIds(state);
+  const unknown = usedBy.filter((id) => !known.has(id));
+  if (unknown.length) {
+    throw new PlangonautError(`--used-by names ${unknown.join(", ")}, which no record answers to. Nothing was written.`);
+  }
+
+  const timestamp = now();
+  const eventId = crypto.randomUUID();
+  const reads = (state.reads ??= []);
+  const id = `RDR-${String(reads.length + 1).padStart(4, "0")}`;
+  reads.push({
+    id,
+    path: relative,
+    sha256: digest,
+    read_at: timestamp,
+    agent,
+    purpose,
+    ...(conclusions ? { conclusions } : {}),
+    ...(usedBy.length ? { used_by: usedBy } : {}),
+    owner,
+    revision: 1,
+    updated_at: timestamp,
+  });
+  state.updated_at = timestamp;
+  const revision = state.revision + 1;
+  state.revision = revision;
+  state.last_event_id = eventId;
+  commitState(root, location, state, {
+    event_id: eventId,
+    type: "FILE_READ_RECORDED",
+    state_revision: revision,
+    at: timestamp,
+    idempotency_key: key,
+    owner,
+    path: relative,
+    sha256: digest,
+  });
+  console.log(`Recorded ${id}: ${agent} read ${relative} (${digest.slice(0, 12)}) for ${purpose}.`);
+}
+
+/**
+ * What a recorded read is worth now.
+ *
+ * Four outcomes, and the difference between the last two is the whole point:
+ * a file nobody recorded reading is not the same as a file somebody read and
+ * then changed. The first is an absence of evidence; the second is evidence
+ * that has expired.
+ */
+type ReadStanding = "PROVED" | "CHANGED SINCE" | "MISSING" | "NO EVIDENCE";
+
+function readStandings(root: string, state: State): { record: ReadRecord; standing: ReadStanding }[] {
+  return (state.reads ?? []).map((record) => {
+    const absolute = path.resolve(root, record.path);
+    if (!fs.existsSync(absolute)) return { record, standing: "MISSING" as ReadStanding };
+    const digest = sha256(fs.readFileSync(absolute));
+    return { record, standing: (digest === record.sha256 ? "PROVED" : "CHANGED SINCE") as ReadStanding };
+  });
+}
+
+/**
+ * The execution readiness check, on its own, for a caller who wants only that.
+ *
+ * Also the command every other reader points at, so that a person told
+ * "execution readiness: failed" has somewhere to go that explains it.
+ */
+function executionReadinessCommand(flags: Flags): void {
+  const root = resolveProject(required(flags, "project-root"));
+  const state = validateRoot(root);
+  const report = readinessReport(state);
+
+  if (flags.json === true) {
+    console.log(JSON.stringify({
+      intent: report.intent,
+      definition: { verdict: report.definition.verdict, findings: report.definition.findings },
+      execution: { verdict: report.execution.verdict, findings: report.execution.findings },
+    }, null, 2));
+    if (report.execution.verdict === "FAILED") reportedExitCode = 2;
+    return;
+  }
+
+  console.log(readinessLines(report, "NOT ASSESSED").slice(0, 2).join("\n"));
+  if (report.definition.findings.length) {
+    console.log(`\nDefinition:`);
+    for (const line of report.definition.findings) console.log(`- ${line}`);
+  }
+  if (report.execution.findings.length) {
+    console.log(`\nExecution readiness:`);
+    for (const line of report.execution.findings) console.log(`- ${line}`);
+  }
+  if (report.execution.remedy.length) console.log(`\n${report.execution.remedy.join("\n")}`);
+  if (report.execution.verdict === "FAILED") {
+    reportedExitCode = 2;
+  }
+}
+
 function status(flags: Flags): void {
   const root = resolveProject(required(flags, "project-root"));
   const state = validateRoot(root);
@@ -6013,7 +6737,7 @@ function status(flags: Flags): void {
    * the machine output should not have to know the mapping.
    */
   const where = locateState(root);
-  console.log(JSON.stringify({ project: state.project.name, versions: versionProvenance(state), state_format: where.format, state_directory: where.name, project_mode: state.project.mode, interaction_mode: state.interaction_mode, question_block_size: questionBlockSize(state), lifecycle_state: state.lifecycle_state, current_gate: state.current_gate, coverage: `${state.modules.filter((item) => new Set(["CONFIRMED", "DEFERRED", "NOT APPLICABLE"]).has(item.status)).length}/${state.modules.length}`, active_module: active && { id: active.id, title: active.title, status: active.status }, needs_reconciliation: state.needs_reconciliation, open_overrides: state.human_overrides.filter((item) => item.status === "OPEN").length, ...blockerAssurance(state), module_progress: moduleProgressJson(state), progress_forecast: statusForecast(state), standing_notices: noticeSummary(root), advance_blocked_by: advanceHold(root, state), exact_next_action: state.exact_next_action, updated_at: state.updated_at }, null, 2));
+  console.log(JSON.stringify({ project: state.project.name, versions: versionProvenance(state), state_format: where.format, state_directory: where.name, project_mode: state.project.mode, interaction_mode: state.interaction_mode, question_block_size: questionBlockSize(state), lifecycle_state: state.lifecycle_state, current_gate: state.current_gate, coverage: `${state.modules.filter((item) => new Set(["CONFIRMED", "DEFERRED", "NOT APPLICABLE"]).has(item.status)).length}/${state.modules.length}`, active_module: active && { id: active.id, title: active.title, status: active.status }, needs_reconciliation: state.needs_reconciliation, open_overrides: state.human_overrides.filter((item) => item.status === "OPEN").length, ...blockerAssurance(state), module_progress: moduleProgressJson(state), progress_forecast: statusForecast(state), standing_notices: noticeSummary(root), advance_blocked_by: advanceHold(root, state), readiness: statusReadiness(root, state), exact_next_action: state.exact_next_action, updated_at: state.updated_at }, null, 2));
 }
 
 /**
@@ -6024,6 +6748,32 @@ function status(flags: Flags): void {
  * forgot to check": a machine consumer that renders a missing forecast as an empty
  * range or a zero is precisely the failure D5 names.
  */
+/**
+ * The three states, for a machine reader.
+ *
+ * `status` never re-derives anything from the ledger except this, and this is
+ * derived rather than stored on purpose: a readiness written into the state
+ * would be a claim that ages, and the whole defect this closes is a project
+ * carrying a claim about itself that nothing had rechecked.
+ */
+function statusReadiness(root: string, state: State): Record<string, unknown> {
+  const report = readinessReport(state);
+  const reads = readStandings(root, state);
+  return {
+    execution_intent: report.intent === "UNDECLARED" ? "NOT DECLARED" : report.intent === "NO" ? "DEFINITION_ONLY" : "EXECUTION",
+    definition: report.definition.verdict,
+    definition_findings: report.definition.findings,
+    execution: report.execution.verdict,
+    execution_findings: report.execution.findings,
+    reads: {
+      proved: reads.filter((entry) => entry.standing === "PROVED").length,
+      changed_since: reads.filter((entry) => entry.standing === "CHANGED SINCE").length,
+      missing: reads.filter((entry) => entry.standing === "MISSING").length,
+      recorded: reads.length,
+    },
+  };
+}
+
 function statusForecast(state: State): Record<string, unknown> {
   const entry = state.progress_forecast;
   if (!entry) return { recorded: false, note: FORECAST_NEVER_RECORDED, record_with: FORECAST_RECORD_COMMAND };
@@ -6083,7 +6833,16 @@ const MODULE_PREREQUISITES: Record<number, number[]> = {
   11: [10],
   12: [3, 10],
   15: [4, 8],
-  16: [1, 2, 4, 9, 10],
+  /*
+   * And on the two operational modules.
+   *
+   * Their absence here is the mechanical cause of the pilot: module 16 is the
+   * final review, its prerequisites were the modules that define the project,
+   * and the two that organise its execution were not among them. An interview
+   * could therefore arrive at "does the blueprint reflect your intent?" without
+   * ever having asked who was going to build the thing.
+   */
+  16: [1, 2, 4, 9, 10, 14, 15],
 };
 
 /**
@@ -6361,6 +7120,50 @@ function rememberQuestionBlockSize(root: string, flags: Flags): void {
   );
 }
 
+/**
+ * What the project needs operationally, phrased as the thing to do next.
+ *
+ * Returns nothing when there is nothing to say — a definition-only project, or
+ * one whose execution readiness already passes — because a command that always
+ * prints a warning has stopped being a warning.
+ */
+function operationalRedirect(state: State, readiness: ReadinessReport): string[] {
+  if (readiness.intent === "NO") return [];
+
+  const definitionSettled = readiness.definition.verdict === "PASSED";
+  const lines: string[] = [];
+
+  if (readiness.intent === "UNDECLARED") {
+    if (!definitionSettled) return [];
+    lines.push(
+      `BEFORE THE FINAL REVIEW: nobody has declared whether this project is meant to be built.`,
+      `  The definition looks substantially complete, and what happens next depends entirely on the answer.`,
+      `  If it is a study, a proposal, a concept note, a tender or a feasibility analysis, say so and the definition is the deliverable:`,
+      `    plangonaut execution-intent --project-root . --definition-only --reason "<why>" --owner <owner> --operation-id <id>`,
+      `  If it is to be built:`,
+      `    plangonaut execution-intent --project-root . --execution --reason "<why>" --owner <owner> --operation-id <id>`,
+      `  The engine does not infer this from the absence of tasks, because an unfinished project looks the same.`,
+    );
+    return lines;
+  }
+
+  if (readiness.execution.verdict !== "FAILED") return [];
+
+  lines.push(
+    `BEFORE THE FINAL REVIEW: this project is to be built, and ${readiness.execution.findings.length} thing${readiness.execution.findings.length === 1 ? "" : "s"} stop${readiness.execution.findings.length === 1 ? "s" : ""} anybody from starting.`,
+  );
+  for (const finding of readiness.execution.findings.slice(0, 5)) lines.push(`  - ${finding}`);
+  if (readiness.execution.findings.length > 5) lines.push(`  - … and ${readiness.execution.findings.length - 5} more: plangonaut execution-readiness --project-root .`);
+  lines.push(
+    ``,
+    `  These are answered by the operational interview, not by more definition and not by writing code.`,
+    `  Modules 14 and 15 are where they belong: who executes this, with what authority, in what order, and how anyone knows a piece is done.`,
+    `  The organisation is proposed, not invented by the user: complete the decomposition, work out what is genuinely independent,`,
+    `  put a motivated configuration with its costs and alternatives, and record what is approved with plangonaut execution-org.`,
+  );
+  return lines;
+}
+
 function next(flags: Flags): void {
   const root = resolveProject(required(flags, "project-root"));
   if (flags.remember === true) return rememberQuestionBlockSize(root, flags);
@@ -6410,6 +7213,23 @@ function next(flags: Flags): void {
   else {
     lines.push(nextQuestions(state, flags.count).trimEnd());
   }
+
+  /*
+   * Before the catalogue's next question: the operational gap, when there is one.
+   *
+   * The pilot's `next` was not wrong about the module it proposed. It was
+   * answering "what is the next interview question" while the project's actual
+   * next thing was "nobody has decided how any of this gets built", and no
+   * command was asking that question at all.
+   *
+   * This does not replace the question above it. It goes in front of it, named
+   * as what it is, because a reader who is about to be offered the final review
+   * needs to know that the review would be approving a blueprint with no plan
+   * under it.
+   */
+  const readiness = readinessReport(state);
+  const operational = operationalRedirect(state, readiness);
+  if (operational.length) lines.unshift(...operational, "");
 
   const imbalance = imbalanceLines(progress);
   if (imbalance.length) {
@@ -6704,6 +7524,415 @@ function unprovenancedApprovals(state: State): string[] {
  * belongs to the person confirming, and a check that pretended to it would be
  * the same overreach in the opposite direction.
  */
+// ---------------------------------------------------------------------------
+// Three states of completeness, and why they are three
+// ---------------------------------------------------------------------------
+
+/*
+ * A project can be thoroughly understood and impossible to execute.
+ *
+ * The pilot is the proof. Eighty-two decisions, thirty-three requirements,
+ * sixteen modules of interview, and three tasks — all of them administrative.
+ * Nothing in it was wrong. What was missing was the step where an agreed
+ * outcome becomes work somebody can pick up: who does it, in what order, how
+ * anyone knows a piece is finished. Every command reported that project as
+ * healthy, because every command was measuring the first state and calling it
+ * the whole.
+ *
+ * So there are three, and they are never merged:
+ *
+ *   definition        the problem, the users, the scope, the constraints, the
+ *                     requirements, the decisions, the risks and the expected
+ *                     result are settled.
+ *   execution         that work has been turned into executable units with
+ *                     responsibility, dependencies, acceptance and evidence.
+ *   handoff           the folder carries everything a new executor needs to
+ *                     start and finish without the original conversation.
+ *
+ * They are ordered but not equivalent: the first can be complete while the
+ * second has not been started, which is exactly the pilot, and the third can
+ * fail on a project whose first two are perfect because a document points at
+ * somebody's desktop.
+ */
+
+type ReadinessVerdict = "PASSED" | "FAILED" | "NOT REQUESTED" | "NOT ASSESSED";
+
+interface Readiness {
+  verdict: ReadinessVerdict;
+  /** What stops it, in the order found. Empty when it passes. */
+  findings: string[];
+  /** What would close the findings, for a reader who now has to act. */
+  remedy: string[];
+}
+
+/** Statuses that mean a module has been dealt with one way or another. */
+const MODULE_SETTLED = new Set(["CONFIRMED", "DEFERRED", "NOT APPLICABLE"]);
+
+/**
+ * Modules that define the project, as opposed to organising its execution.
+ *
+ * 14 and 15 are the operational pair and are deliberately outside this set:
+ * a project can be completely defined without either, and saying so is the
+ * point of separating the two states.
+ */
+const DEFINITION_MODULES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+
+/** Work that builds the thing, as opposed to work that arranges for it. */
+const IMPLEMENTATION_KINDS = new Set(["IMPLEMENTATION", "BUILD", "CONSTRUCTION", "DELIVERY", "RESOLUTION", "VERIFICATION"]);
+const ADMINISTRATIVE_KINDS = new Set(["ADMINISTRATIVE", "ADMIN", "SETUP", "GOVERNANCE"]);
+
+/**
+ * Titles too general to be executable, recognised by shape rather than by list.
+ *
+ * A task called "build the app" is not a task, it is the project restated. What
+ * makes it recognisable is not a vocabulary of forbidden words — that would
+ * fire on honest titles in domains nobody anticipated — but the absence of
+ * anything that narrows it: no component, no requirement, no acceptance
+ * criterion, and a title short enough to be a heading.
+ *
+ * This is why the check is never a count. Three tasks can be a complete plan
+ * for a small project and a hundred can be a hundred restatements of the same
+ * intention; what decides it is whether each one says enough to be picked up.
+ */
+function taskIsUnderspecified(task: Task): string[] {
+  const missing: string[] = [];
+  if (!nonEmpty(task.acceptance)) missing.push("no acceptance criterion");
+  if (!(task.requirements ?? []).length && !(task.decisions ?? []).length) missing.push("no requirement or decision of origin");
+  if (!nonEmpty(task.role) && !nonEmpty(task.owner)) missing.push("no responsible role");
+  if (!nonEmpty(task.verification) && !nonEmpty(task.evidence_expected)) missing.push("no verification or evidence");
+  return missing;
+}
+
+/** Has this project said whether it is meant to be built? */
+function executionRequested(state: State): "YES" | "NO" | "UNDECLARED" {
+  const mode = String(state.execution_intent?.mode ?? "").toUpperCase();
+  if (mode === "DEFINITION_ONLY") return "NO";
+  if (mode === "EXECUTION") return "YES";
+  return "UNDECLARED";
+}
+
+/**
+ * Is the project understood?
+ *
+ * Deliberately generous, because this is the state the pilot genuinely reached
+ * and calling it incomplete would be as wrong as calling the project finished.
+ * It asks whether the defining modules are settled and whether the ledger holds
+ * the things a definition produces.
+ */
+function definitionReadiness(state: State): Readiness {
+  const findings: string[] = [];
+  const modules = state.modules ?? [];
+  const unsettled = DEFINITION_MODULES.filter((id) => {
+    const module = modules.find((item: any) => item.id === id);
+    return module !== undefined && !MODULE_SETTLED.has(String(module.status).toUpperCase());
+  });
+  if (unsettled.length) findings.push(`definition module${unsettled.length === 1 ? "" : "s"} ${unsettled.join(", ")} ${unsettled.length === 1 ? "is" : "are"} not settled.`);
+  if (!(state.requirements ?? []).length) findings.push(`nothing states what the result has to do: no requirements are recorded.`);
+  if (!(state.decisions ?? []).length) findings.push(`nothing states what was chosen: no decisions are recorded.`);
+  const open = openInterviewEntries(state);
+  if (open.unapplied.length) findings.push(`${open.unapplied[0].id} has an answer that was never applied.`);
+  return {
+    verdict: findings.length ? "FAILED" : "PASSED",
+    findings,
+    remedy: findings.length ? [`plangonaut next --project-root . proposes the question that closes the first of these.`] : [],
+  };
+}
+
+/**
+ * Is the work executable?
+ *
+ * Every finding below names something a person picking this folder up would
+ * have to invent. None of them is about size: a one-person project fails this
+ * only for the same reasons a twenty-person one does, and passing it does not
+ * require agents, Git, or software.
+ */
+function executionReadiness(state: State): Readiness {
+  const requested = executionRequested(state);
+  if (requested === "NO") {
+    return { verdict: "NOT REQUESTED", findings: [], remedy: [] };
+  }
+  if (requested === "UNDECLARED") {
+    /*
+     * Undeclared is not the same as definition-only, and never becomes it.
+     *
+     * Inferring the mode from the absence of tasks would reproduce the defect
+     * exactly: the pilot has no implementation tasks, and the inference would
+     * conclude that it was never meant to have any and declare it finished.
+     */
+    return {
+      verdict: "NOT ASSESSED",
+      findings: [`nobody has declared whether this project is meant to be built.`],
+      remedy: [
+        `If it is: plangonaut execution-intent --project-root . --execution --reason "<why>" --owner <owner> --operation-id <id>`,
+        `If it is a study, a proposal, a concept note or a tender and no execution is intended:`,
+        `  plangonaut execution-intent --project-root . --definition-only --reason "<why>" --owner <owner> --operation-id <id>`,
+        `The engine does not guess this from the absence of tasks, because a project that is merely unfinished looks identical.`,
+      ],
+    };
+  }
+
+  const findings: string[] = [];
+  const tasks = state.tasks ?? [];
+  const requirements = state.requirements ?? [];
+
+  // 1. Is there any work that builds the thing?
+  const implementation = tasks.filter((task) => IMPLEMENTATION_KINDS.has(String(task.kind ?? "").toUpperCase()));
+  const administrative = tasks.filter((task) => ADMINISTRATIVE_KINDS.has(String(task.kind ?? "").toUpperCase()));
+  const unkinded = tasks.filter((task) => !nonEmpty(task.kind));
+  if (!tasks.length) {
+    findings.push(`no tasks are recorded, so nothing states what to do.`);
+  } else if (!implementation.length && administrative.length === tasks.length) {
+    findings.push(
+      `all ${tasks.length} recorded task${tasks.length === 1 ? " is" : "s are"} administrative (${administrative.map((task) => task.id).join(", ")}). ` +
+      `Arranging for work is not the same as the work: nothing here builds the thing the requirements describe.`
+    );
+  } else if (!implementation.length && unkinded.length) {
+    findings.push(
+      `${unkinded.length} task${unkinded.length === 1 ? "" : "s"} record${unkinded.length === 1 ? "s" : ""} no kind, so the engine cannot tell whether anything here builds the thing. ` +
+      `Record --kind on each; absent is not read as implementation.`
+    );
+  }
+
+  // 2. Requirements nobody is going to satisfy.
+  const covered = new Set<string>();
+  for (const task of tasks) for (const id of task.requirements ?? []) covered.add(String(id).toUpperCase());
+  const approvedStatuses = new Set(["ACTIVE", "CONFIRMED", "APPROVED"]);
+  const uncovered = requirements.filter(
+    (requirement) => approvedStatuses.has(String(requirement.status).toUpperCase()) && !covered.has(String(requirement.id).toUpperCase())
+  );
+  if (uncovered.length) {
+    const shown = uncovered.slice(0, 8).map((item) => item.id).join(", ");
+    findings.push(
+      `${uncovered.length} approved requirement${uncovered.length === 1 ? " has" : "s have"} no task: ${shown}${uncovered.length > 8 ? ", …" : ""}. ` +
+      `A requirement nothing is going to satisfy is a promise the folder cannot keep.`
+    );
+  }
+
+  // 3. Work nobody can pick up.
+  const underspecified: string[] = [];
+  for (const task of tasks) {
+    if (ADMINISTRATIVE_KINDS.has(String(task.kind ?? "").toUpperCase())) continue;
+    const missing = taskIsUnderspecified(task);
+    if (missing.length >= 2) underspecified.push(`${task.id} (${missing.join(", ")})`);
+  }
+  if (underspecified.length) {
+    findings.push(
+      `${underspecified.length} task${underspecified.length === 1 ? "" : "s"} cannot be picked up as written: ${underspecified.slice(0, 6).join("; ")}${underspecified.length > 6 ? "; …" : ""}.`
+    );
+  }
+
+  // 4. Who does it.
+  const organization = state.execution_organization;
+  if (!organization) {
+    findings.push(
+      `the organisation of whoever executes this has not been approved. ` +
+      `One executor is a complete answer to "how many" and leaves review, handoff and stop conditions unanswered.`
+    );
+  } else {
+    if (!nonEmpty(organization.concurrency)) findings.push(`the approved organisation does not say how concurrent changes to the same thing are prevented.`);
+    if (!nonEmpty(organization.handoff)) findings.push(`the approved organisation does not say when work passes from one executor to another.`);
+    if (organization.executors > 1 && !nonEmpty(organization.integrator)) {
+      findings.push(`${organization.executors} executors are approved and none of them integrates: overlapping responsibility with no integrator is how two correct halves fail to become one thing.`);
+    }
+    if (!nonEmpty(organization.reviewer)) findings.push(`the approved organisation names no reviewer.`);
+  }
+
+  // 5. Order.
+  const dependencies = state.dependencies ?? [];
+  const cycle = dependencyCycle(dependencies);
+  if (cycle) findings.push(`the dependencies contain a cycle: ${cycle.join(" -> ")}. Nothing in it can start.`);
+
+  // 6. Risks carried by nobody.
+  for (const risk of state.risks ?? []) {
+    const status = String(risk.status ?? "").toUpperCase();
+    if (status === "MITIGATED" || status === "ACCEPTED") continue;
+    if (!nonEmpty(risk.owner)) findings.push(`risk ${risk.id} has no owner.`);
+  }
+
+  // 7. Where to start.
+  if (!nonEmpty(state.exact_next_action)) findings.push(`no exact next action is recorded, so the folder does not say how to begin.`);
+
+  return {
+    verdict: findings.length ? "FAILED" : "PASSED",
+    findings,
+    remedy: findings.length
+      ? [
+          `These are answered by the operational interview and the work breakdown, not by more definition.`,
+          `plangonaut next --project-root . proposes the first of them.`,
+        ]
+      : [],
+  };
+}
+
+/**
+ * The first cycle in a dependency graph, or null.
+ *
+ * Reported as the path rather than as a boolean, because "there is a cycle" is
+ * not actionable and "A -> B -> C -> A" is.
+ */
+function dependencyCycle(dependencies: Dependency[]): string[] | null {
+  const edges = new Map<string, string[]>();
+  for (const dependency of dependencies) {
+    if (String(dependency.type).toUpperCase() === "RELATES_TO") continue;
+    const list = edges.get(dependency.from) ?? [];
+    list.push(dependency.to);
+    edges.set(dependency.from, list);
+  }
+  const state = new Map<string, number>(); // 0 unseen, 1 on stack, 2 done
+  const stack: string[] = [];
+  let found: string[] | null = null;
+  const walk = (node: string): void => {
+    if (found) return;
+    state.set(node, 1);
+    stack.push(node);
+    for (const next of edges.get(node) ?? []) {
+      if (found) return;
+      const seen = state.get(next) ?? 0;
+      if (seen === 1) {
+        found = [...stack.slice(stack.indexOf(next)), next];
+        return;
+      }
+      if (seen === 0) walk(next);
+    }
+    stack.pop();
+    state.set(node, 2);
+  };
+  for (const node of edges.keys()) if ((state.get(node) ?? 0) === 0) walk(node);
+  return found;
+}
+
+/**
+ * The three verdicts, together, for every reader that shows them.
+ *
+ * One function so that `status`, `resume`, `next`, `validate`, `handoff-check`,
+ * the context pack and the forecast cannot drift into disagreeing about the
+ * same project — which is the failure mode this whole cycle is about, made by
+ * the engine instead of by an agent.
+ */
+interface ReadinessReport {
+  definition: Readiness;
+  execution: Readiness;
+  intent: "YES" | "NO" | "UNDECLARED";
+}
+
+function readinessReport(state: State): ReadinessReport {
+  return {
+    definition: definitionReadiness(state),
+    execution: executionReadiness(state),
+    intent: executionRequested(state),
+  };
+}
+
+/** The three lines every human-facing reader prints, in the same words. */
+function readinessLines(report: ReadinessReport, handoff: ReadinessVerdict): string[] {
+  const definition = report.definition.verdict === "PASSED" ? "substantially complete" : "incomplete";
+  const execution =
+    report.execution.verdict === "PASSED" ? "passed"
+    : report.execution.verdict === "FAILED" ? "failed"
+    : report.execution.verdict === "NOT REQUESTED" ? "not requested"
+    : "not assessed";
+  const handoffText = handoff === "PASSED" ? "passed" : handoff === "FAILED" ? "failed" : handoff === "NOT REQUESTED" ? "not requested" : "not assessed";
+  const lines = [
+    `definition: ${definition}`,
+    `execution readiness: ${execution}`,
+    `handoff readiness: ${handoffText}`,
+  ];
+  if (report.intent === "NO") {
+    lines.push(
+      ``,
+      `Definition complete.`,
+      `Execution readiness not requested.`,
+      `This folder is not an execution package.`,
+    );
+  }
+  return lines;
+}
+
+/**
+ * The three modules that are about execution rather than about the project.
+ *
+ * Every other module is confirmed on the strength of its own interview: the
+ * questions were asked, the answers were applied, the decisions they produced
+ * were approved. That is the right test for "have we understood the users", and
+ * it is not the right test for these three, because their subject matter is not
+ * something you can finish understanding — it is something you have to have
+ * *done*.
+ *
+ * The pilot confirmed its way to module 16 with three administrative tasks and
+ * no organisation, and every module label was honest: the questions really had
+ * been asked. What nothing checked is that the answers had produced a plan.
+ *
+ * These refuse rather than warn. Elsewhere this engine prefers to record and
+ * report, because a refusal that fires on eighty-seven existing call sites is a
+ * migration nobody asked for. Here the opposite holds: a confirmed module 16 is
+ * the sentence a recipient trusts most, and it was the one thing in the pilot
+ * that was false.
+ */
+function operationalModuleRefusals(root: string, state: State, moduleId: number, outcome: string): string[] {
+  const refusals: string[] = [];
+  const readiness = readinessReport(state);
+
+  if (moduleId === 14) {
+    /*
+     * NOT APPLICABLE means "no team and no second agent", and never "nobody
+     * asked". The distinction matters because the module is where responsibility
+     * is recorded, and a project executed by one person still has a reviewer, a
+     * handoff and a point at which work stops.
+     */
+    if (outcome === "NOT APPLICABLE" && !state.execution_organization) {
+      refusals.push(
+        `module 14 can be NOT APPLICABLE when no team and no second executor are needed, and the single executor's responsibility still has to exist. ` +
+        `Record it first: plangonaut execution-org --project-root . --executors 1 --mode <human|agent|hybrid> --reviewer <who> --concurrency "<how>" --handoff "<when>" --owner <owner> --operation-id <id>.`
+      );
+    }
+    if (outcome === "CONFIRMED" && !state.execution_organization) {
+      refusals.push(
+        `module 14 is about who executes this and nothing records an approved organisation. ` +
+        `Propose one, have it approved, and record it with plangonaut execution-org.`
+      );
+    }
+  }
+
+  if (moduleId === 15 && outcome === "CONFIRMED") {
+    const tasks = state.tasks ?? [];
+    if (!tasks.length) refusals.push(`module 15 is the plan, and no task is recorded: there is no work breakdown to confirm.`);
+    if (!(state.checkpoints ?? []).length && !(state.gates ?? []).length) refusals.push(`nothing records a milestone or a gate, so the plan has no points at which progress is checked.`);
+    if (!(state.dependencies ?? []).length && tasks.length > 1) refusals.push(`${tasks.length} tasks and no recorded dependency: nothing states what has to happen before what.`);
+    if (!(state.risks ?? []).length) refusals.push(`no risk is recorded, so the plan claims nothing can go wrong.`);
+    const withoutAcceptance = tasks.filter((task) => !nonEmpty(task.acceptance));
+    if (withoutAcceptance.length === tasks.length && tasks.length > 0) {
+      refusals.push(`no task records an acceptance criterion, so nothing in the plan states how anybody would know a piece of it was finished.`);
+    }
+    const withoutVerification = tasks.filter((task) => !nonEmpty(task.verification) && !nonEmpty(task.evidence_expected));
+    if (withoutVerification.length === tasks.length && tasks.length > 0) {
+      refusals.push(`no task records a verification or the evidence it should leave behind.`);
+    }
+    if (!state.execution_organization) refusals.push(`nothing records who is responsible for the plan's work.`);
+  }
+
+  if (moduleId === 16 && outcome === "CONFIRMED") {
+    if (readiness.definition.verdict !== "PASSED") {
+      refusals.push(`the definition is not complete: ${readiness.definition.findings.join(" ")}`);
+    }
+    if (readiness.intent === "UNDECLARED") {
+      refusals.push(
+        `nobody has declared whether this project is to be built, and the final review cannot approve a blueprint without knowing which kind of thing it is. ` +
+        `plangonaut execution-intent --project-root . --execution|--definition-only --reason "<why>" --owner <owner> --operation-id <id>.`
+      );
+    }
+    if (readiness.execution.verdict === "FAILED") {
+      refusals.push(`execution readiness fails: ${readiness.execution.findings.slice(0, 3).join(" ")}${readiness.execution.findings.length > 3 ? ` (and ${readiness.execution.findings.length - 3} more; plangonaut execution-readiness lists them)` : ""}`);
+    }
+    const proposed = (state.decisions ?? []).filter((decision) => String(decision.status).toUpperCase() === "PROPOSED");
+    if (proposed.length) {
+      refusals.push(`${proposed.length} decision${proposed.length === 1 ? " is" : "s are"} still PROPOSED (${proposed.slice(0, 5).map((item) => item.id).join(", ")}${proposed.length > 5 ? ", …" : ""}), so the blueprint rests on choices nobody has taken.`);
+    }
+    if (state.needs_reconciliation) refusals.push(`an override is open and unreconciled, so the project's direction is not settled.`);
+  }
+
+  return refusals;
+}
+
 function moduleConfirmationBlockers(state: State, moduleId: number): string[] {
   const blockers: string[] = [];
   const entries = interviewLog(state).filter((entry) => entry.module === moduleId);
@@ -8171,6 +9400,70 @@ function resumeFrontier(state: any): string[] {
   return lines;
 }
 
+/**
+ * The three states and the standing of every recorded read, for `resume`.
+ *
+ * `resume` is what an agent reads when it picks a folder up cold, which makes
+ * it the one place where "somebody said they read this" has to be separated
+ * from "this was read, and here is the proof".
+ */
+function resumeReadinessLines(root: string, state: State): string[] {
+  const readiness = readinessReport(state);
+  const lines = [``, `## Completeness`, ``, ...readinessLines(readiness, "NOT ASSESSED").slice(0, 2)];
+  if (readiness.intent === "NO") {
+    lines.push(``, `Definition complete.`, `Execution readiness not requested.`, `This folder is not an execution package.`);
+  } else if (readiness.execution.verdict === "FAILED") {
+    lines.push(``, `Execution readiness fails on:`);
+    for (const finding of readiness.execution.findings.slice(0, 6)) lines.push(`- ${finding}`);
+    if (readiness.execution.findings.length > 6) lines.push(`- … and ${readiness.execution.findings.length - 6} more.`);
+  } else if (readiness.execution.verdict === "NOT ASSESSED") {
+    lines.push(``, ...readiness.execution.remedy.map((line) => `- ${line}`));
+  }
+
+  const reads = readStandings(root, state);
+  lines.push(``, `## Files this project was built on`, ``);
+  if (!reads.length) {
+    lines.push(
+      `No read is recorded. That is an absence of evidence, not a statement that nothing was read:`,
+      `a claim in an earlier turn that a file was read is not evidence, and neither is a later claim that it was not.`,
+      `Record one with plangonaut read-record --project-root . --path <file> --purpose "<why>" --owner <owner> --operation-id <id>.`,
+    );
+  } else {
+    for (const entry of reads) {
+      const label =
+        entry.standing === "PROVED" ? "read and proved"
+        : entry.standing === "CHANGED SINCE" ? "**changed since it was read**"
+        : "**no longer in the folder**";
+      lines.push(`- ${entry.record.path} — ${label} (${entry.record.agent}, ${entry.record.purpose})`);
+      if (entry.standing === "CHANGED SINCE" && (entry.record.used_by ?? []).length) {
+        lines.push(`  ${(entry.record.used_by ?? []).join(", ")} rest on the earlier reading.`);
+      }
+    }
+    const cited = citedButUnverified(state, reads);
+    for (const line of cited) lines.push(`- ${line}`);
+  }
+  return lines;
+}
+
+/**
+ * Files a governed document points at that nobody recorded reading.
+ *
+ * The fourth standing, and the one that is easiest to miss: a document can rest
+ * on a file, name it, and nothing anywhere says anybody opened it.
+ */
+function citedButUnverified(state: State, reads: { record: ReadRecord }[]): string[] {
+  const proven = new Set(reads.map((entry) => entry.record.path));
+  const lines: string[] = [];
+  for (const artifact of state.artifacts ?? []) {
+    const value = nonEmpty(artifact.working_path) ? artifact.working_path : artifact.base_path;
+    if (!nonEmpty(value)) continue;
+    const relative = canonicalRelative(String(value));
+    if (proven.has(relative)) continue;
+    lines.push(`${relative} — cited by ${artifact.id}, no read recorded`);
+  }
+  return lines.slice(0, 10);
+}
+
 function resume(flags: Flags): void {
   const root = resolveProject(required(flags, "project-root"));
   /*
@@ -8242,7 +9535,7 @@ function resume(flags: Flags): void {
   if (history.notes.length) {
     integrity.push("## What the history can and cannot prove", "", ...history.notes.map((note) => `- ${note}`), "");
   }
-  console.log(`${contextMarkdown(state)}\n${integrity.join("\n")}\n${interviewMarkdown(state).join("\n")}\n${resumeFrontier(state).join("\n")}\n## Catalog questions for the active module\n\nThese come from the questionnaire catalog, not from this project. The recorded exact next action above prevails; ask these only if the module is genuinely still open and an answer would change the outcome.\n\n${nextQuestions(state).trimEnd()}\n\nRe-verify canonical sources before changing files.`);
+  console.log(`${contextMarkdown(state)}\n${integrity.join("\n")}\n${resumeReadinessLines(root, state).join("\n")}\n${interviewMarkdown(state).join("\n")}\n${resumeFrontier(state).join("\n")}\n## Catalog questions for the active module\n\nThese come from the questionnaire catalog, not from this project. The recorded exact next action above prevails; ask these only if the module is genuinely still open and an answer would change the outcome.\n\n${nextQuestions(state).trimEnd()}\n\nRe-verify canonical sources before changing files.`);
 }
 
 /**
@@ -8288,6 +9581,22 @@ function applyModuleOutcome(
    *
    * The brief allowed either: "a check or a warning, where possible."
    */
+  /*
+   * Refused before anything is written, for the three operational modules.
+   *
+   * `confirmationBlockers` below warns; these refuse. The difference is what
+   * the label is load-bearing for: a confirmed module 9 is a statement that the
+   * architecture was discussed, and a confirmed module 16 is a statement that
+   * the project is ready, which the pilot made and was not.
+   */
+  const refusals = operationalModuleRefusals(root, state, input.moduleId, outcome);
+  if (refusals.length) {
+    throw new PlangonautError(
+      `Module ${input.moduleId} cannot be recorded ${outcome}:\n- ${refusals.join("\n- ")}\n` +
+        `Nothing was written. These are about what the project holds, not about whether the questions were asked.`,
+      "PROJECT_STATE_UNTRUSTED",
+    );
+  }
   const confirmationBlockers = outcome === "CONFIRMED" ? moduleConfirmationBlockers(state, input.moduleId) : [];
   Object.assign(module, {
     status: outcome,
@@ -8573,6 +9882,55 @@ function ledgerMutation(kind: string, flags: Flags): void {
     record = { id, title: required(flags, "title").trim(), status, owner };
     if (!record.title) throw new PlangonautError(`--title cannot be empty`);
 
+    /*
+     * The fields that make a task executable, recorded when given and absent
+     * when not.
+     *
+     * Never defaulted. A task with no `kind` is a task whose kind nobody
+     * recorded, and the readiness check reports it as exactly that; writing
+     * `ADMINISTRATIVE` or `IMPLEMENTATION` here on the caller's behalf would
+     * manufacture the one fact the whole check turns on.
+     */
+    if (kind === "task") {
+      const text = (name: string): string | undefined => {
+        const value = flags[name];
+        return typeof value === "string" && value.trim() ? value.trim() : undefined;
+      };
+      const list = (name: string): string[] | undefined => {
+        const value = text(name);
+        if (!value) return undefined;
+        const items = value.split(",").map((item) => item.trim()).filter(Boolean);
+        return items.length ? items : undefined;
+      };
+      const optional: Record<string, unknown> = {
+        kind: text("kind")?.toUpperCase(),
+        requirements: list("requirements")?.map((item) => item.toUpperCase()),
+        decisions: list("decisions")?.map((item) => item.toUpperCase()),
+        component: text("component"),
+        role: text("role"),
+        acceptance: text("acceptance"),
+        verification: text("verification"),
+        evidence_expected: text("evidence-expected"),
+        handoff: text("handoff"),
+        estimate: text("estimate"),
+        inputs: list("inputs"),
+        outputs: list("outputs"),
+        risks: list("risks")?.map((item) => item.toUpperCase()),
+        ...(flags.parallelizable === true ? { parallelizable: true } : {}),
+      };
+      for (const [field, value] of Object.entries(optional)) {
+        if (value !== undefined) record[field] = value;
+      }
+
+      // An origin that names nothing is worse than none: it reads as coverage.
+      const known = knownRecordIds(state);
+      for (const field of ["requirements", "decisions", "risks"]) {
+        for (const id of (record[field] ?? []) as string[]) {
+          if (!known.has(id)) throw new PlangonautError(`--${field} names ${id}, which no record answers to. Nothing was written.`);
+        }
+      }
+    }
+
     // An approval has to be able to name who approved it. See
     // `findDecisionProvenance` for why reading a folder is not consent.
     if (kind === "decision" && status === "APPROVED") {
@@ -8647,6 +10005,35 @@ function ledgerMutation(kind: string, flags: Flags): void {
     if (!rule.statuses!.has(status)) throw new PlangonautError(`Unsupported agent status: ${status}`);
     record = { id, name: required(flags, "name").trim(), status, owner };
     if (!record.name) throw new PlangonautError(`--name cannot be empty`);
+    /*
+     * What this executor is for, when somebody recorded it.
+     *
+     * An executor is a person, an organisation or an agent, and the ledger does
+     * not rename itself for a project that builds a bridge. What it needs to
+     * carry is the same in either case: what they do, what they own outright,
+     * and whether they are the one who integrates or the one who reviews.
+     */
+    const agentText = (name: string): string | undefined => {
+      const value = flags[name];
+      return typeof value === "string" && value.trim() ? value.trim() : undefined;
+    };
+    const agentList = (name: string): string[] | undefined => {
+      const value = agentText(name);
+      if (!value) return undefined;
+      const items = value.split(",").map((item) => item.trim()).filter(Boolean);
+      return items.length ? items : undefined;
+    };
+    const agentOptional: Record<string, unknown> = {
+      role: agentText("role"),
+      skills: agentList("skills"),
+      owns: agentList("owns"),
+      authority: agentText("authority"),
+      ...(flags["is-integrator"] === true ? { integrator: true } : {}),
+      ...(flags["is-reviewer"] === true ? { reviewer: true } : {}),
+    };
+    for (const [field, value] of Object.entries(agentOptional)) {
+      if (value !== undefined) record[field] = value;
+    }
   } else if (kind === "evidence") {
     const verified = recordedSourceFile(root, "Evidence", path.resolve(required(flags, "file")), {
       suffix: "\nNothing was written.",
@@ -11033,7 +12420,7 @@ function help(): void {
   qa-close --project-root . --id QNA-0001 --kind deferred|skipped|invalidated --reason TEXT --owner NAME
   qa-supersede --project-root . --id QNA-0001 --new-id QNA-0009 --question TEXT --rationale TEXT --reason TEXT --owner NAME
   qa-log --project-root . [--open] [--last] [--json] [--id QNA-0001] [--regenerate]
-  context-pack --project-root . [--output session.md]\n  validate --project-root . [--strict]\n  govern --project-root . --exclude docs/appunti.md --reason TEXT --owner NAME\n  govern --project-root . --include docs/appunti.md --owner NAME\n  migrate --project-root .\n  migrate-backups --project-root . [--apply]        (move a pre-0.3.0-alpha.5 backups/ directory under the ledger)\n  migrate-brand --project-root . --dry-run                   (what a brand migration would do; writes nothing)\n  migrate-brand --project-root .                             (.beave -> .plangonaut, verified backup and receipt)\n  migrate-brand --project-root . --resume                    (finish one that was interrupted)\n  migrate-brand --project-root . --rollback MIG-ID           (undo one, verifying receipt and backup)\n  migrate-brand --project-root . --rollback MIG-ID --discard-changes  (and throw away what was recorded since)\n  replay --project-root . [--verify]                     (rebuild the state from the events and compare)\n  replay --project-root . --repair --operation-id OP-ID  (put the rebuilt state back, keeping a backup)\n  baseline --project-root . --reason TEXT --owner NAME --operation-id OP-ID\n  recover --project-root . [--apply]                     (interrupted operations: what they are, and finish them)\n  unlock --project-root . [--force]                      (who holds the project lock, and release an abandoned one)\n  project-export --project-root . --output-dir DIR\n  project-verify --package-dir DIR\n  handoff-check --project-root . [--json]                (is this folder enough for somebody who was not here?)\n  project-import --package-dir DIR --project-root NEW_DIR\n  export --target portable|codex|claude|gemini|agy --output-dir DIR\n  install --target codex|claude|gemini|agy|all [--scope project|workspace|user] [--project-root DIR] [--dry-run]\n  verify-install --target codex|claude|gemini|agy [--scope project|workspace|user] [--project-root DIR]\n  version`);
+  context-pack --project-root . [--output session.md]\n  validate --project-root . [--strict]\n  govern --project-root . --exclude docs/appunti.md --reason TEXT --owner NAME\n  govern --project-root . --include docs/appunti.md --owner NAME\n  migrate --project-root .\n  migrate-backups --project-root . [--apply]        (move a pre-0.3.0-alpha.5 backups/ directory under the ledger)\n  migrate-brand --project-root . --dry-run                   (what a brand migration would do; writes nothing)\n  migrate-brand --project-root .                             (.beave -> .plangonaut, verified backup and receipt)\n  migrate-brand --project-root . --resume                    (finish one that was interrupted)\n  migrate-brand --project-root . --rollback MIG-ID           (undo one, verifying receipt and backup)\n  migrate-brand --project-root . --rollback MIG-ID --discard-changes  (and throw away what was recorded since)\n  replay --project-root . [--verify]                     (rebuild the state from the events and compare)\n  replay --project-root . --repair --operation-id OP-ID  (put the rebuilt state back, keeping a backup)\n  baseline --project-root . --reason TEXT --owner NAME --operation-id OP-ID\n  recover --project-root . [--apply]                     (interrupted operations: what they are, and finish them)\n  unlock --project-root . [--force]                      (who holds the project lock, and release an abandoned one)\n  project-export --project-root . --output-dir DIR\n  project-verify --package-dir DIR\n  handoff-check --project-root . [--json]                (is this folder enough for somebody who was not here?)\n  execution-readiness --project-root . [--json]          (is the work executable, or only defined?)\n  execution-intent --project-root . --execution|--definition-only --reason TEXT --owner NAME --operation-id ID\n  execution-org --project-root . --executors N --mode TEXT --reviewer NAME --concurrency TEXT --handoff TEXT [--integrator NAME] --owner NAME --operation-id ID\n  read-record --project-root . --path FILE --purpose TEXT [--agent NAME] [--conclusions TEXT] [--used-by IDS] --owner NAME --operation-id ID\n  project-import --package-dir DIR --project-root NEW_DIR\n  export --target portable|codex|claude|gemini|agy --output-dir DIR\n  install --target codex|claude|gemini|agy|all [--scope project|workspace|user] [--project-root DIR] [--dry-run]\n  verify-install --target codex|claude|gemini|agy [--scope project|workspace|user] [--project-root DIR]\n  version`);
 }
 
 /**
@@ -11843,16 +13230,44 @@ export async function main(argv: string[]): Promise<number> {
        * the engine instead of by an agent.
        */
       const coherence = ledgerCoherenceFindings(root, state);
-      if (flags.strict === true && (unclaimed.findings.length || coherence.length)) {
+      /*
+       * `--strict` is the flag a release check and a handoff use, and both of
+       * them are asking whether the folder is fit to leave. A project that is
+       * to be built and has no plan for building it is not, so it fails here
+       * too — and only when execution was actually requested, because a
+       * feasibility study passing `--strict` is correct.
+       */
+      const strictReadiness = readinessReport(state);
+      const strictExecution = strictReadiness.intent === "YES" && strictReadiness.execution.verdict === "FAILED"
+        ? strictReadiness.execution.findings
+        : [];
+      if (flags.strict === true && (unclaimed.findings.length || coherence.length || strictExecution.length)) {
         const parts: string[] = [];
         if (unclaimed.findings.length) parts.push(`- ${unclaimed.findings.join("\n- ")}\n\n${unclaimed.remedy.join("\n")}`);
         if (coherence.length) parts.push(`- ${coherence.join("\n- ")}`);
+        if (strictExecution.length) parts.push(`execution readiness failed:\n- ${strictExecution.join("\n- ")}`);
         throw new PlangonautError(
           `Validation failed (--strict):\n${parts.join("\n\n")}`,
           "PROJECT_STATE_UNTRUSTED"
         );
       }
       console.log("Plangonaut state is valid.");
+
+      /*
+       * Valid is a statement about integrity, and says nothing about whether
+       * the project can be executed. Both are printed, because the pilot's
+       * folder was valid on every run it ever had.
+       */
+      const readiness = readinessReport(state);
+      console.log(`\n${readinessLines(readiness, "NOT ASSESSED").slice(0, 2).join("\n")}`);
+      if (readiness.execution.verdict === "FAILED") {
+        console.log(`\nExecution readiness fails on ${readiness.execution.findings.length} thing${readiness.execution.findings.length === 1 ? "" : "s"}:`);
+        for (const line of readiness.execution.findings) console.log(`- ${line}`);
+        console.log(`\nIntegrity is what "valid" means above. This is whether anybody could pick the folder up and build it. --strict makes it an error.`);
+      } else if (readiness.execution.verdict === "NOT ASSESSED") {
+        console.log(`\n${readiness.execution.findings.join("\n")}`);
+        for (const line of readiness.execution.remedy) console.log(line);
+      }
       if (unclaimed.findings.length) {
         console.log(`\nWARNING: ${unclaimed.findings.length === 1 ? "one document is" : `${unclaimed.findings.length} documents are`} outside the ledger.`);
         for (const line of unclaimed.findings) console.log(`- ${line}`);
@@ -11883,6 +13298,10 @@ export async function main(argv: string[]): Promise<number> {
     else if (command === "migrate") migrate(flags);
     else if (command === "migrate-backups") migrateBackups(flags);
     else if (command === "handoff-check") handoffCheck(flags);
+    else if (command === "execution-readiness") executionReadinessCommand(flags);
+    else if (command === "execution-intent") executionIntent(flags);
+    else if (command === "execution-org") executionOrg(flags);
+    else if (command === "read-record") readRecord(flags);
     else if (command === "govern") govern(flags);
     else if (command === "migrate-brand") migrateBrand(flags);
     else if (command === "project-export") projectExport(flags);

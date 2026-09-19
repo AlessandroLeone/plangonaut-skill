@@ -18,6 +18,9 @@ Read [references/coverage-contract.md](references/coverage-contract.md) during d
 - Default to **Standard** interaction: ask a small group of related questions, recommend, recap, then stop and wait.
 - Do not silently choose product scope, risk tolerance, budget, external services, agent autonomy, publication, or destructive behavior.
 - Do not confuse a complete blueprint with a completed implementation.
+- **Definition, execution readiness and handoff readiness are three states, not three words for one.** A project can be thoroughly defined and impossible to execute: that is the normal outcome of a good interview that never asked how the work would be done. Report them separately and never let one stand for another.
+- **Never infer "definition only" from the absence of tasks.** A feasibility study and an unfinished project look identical. The user declares it, and it is recorded: `plangonaut execution-intent --project-root . --definition-only --reason "<why>" --owner <owner> --operation-id <id>`.
+- **When the goal includes building the thing, the operational interview is not optional.** Modules 14 and 15 must be answered before the final review, and module 16 refuses while execution readiness fails.
 - Evidence precedes every readiness or completion claim.
 - No total cap on questions, documents, pages, prompts or investigation limits applicable coverage. Plan the whole agreed outcome and explicit resolution work for future-dependent detail.
 - Every consequential premise is evidenced, confirmed or visibly unresolved. Deferral is not resolution and may block execution.
@@ -545,6 +548,61 @@ Plangonaut itself runs through the single host AI model chosen by the user. It d
 - After initialization, the same agent or another execution AI reads those artifacts and may instantiate the topology when authorized and supported. No agent switch, Studio use or board review is required.
 - Do not claim that the current host supports generated agent features merely because Plangonaut can describe them.
 
+## Definition, execution, handoff
+
+Three states. Say which one you are claiming.
+
+| State | The question it answers |
+|---|---|
+| Definition | Are the problem, users, scope, constraints, requirements, decisions, risks and expected result settled? |
+| Execution readiness | Has that been turned into executable units with responsibility, dependencies, acceptance criteria and evidence? |
+| Handoff readiness | Can somebody who was not in the conversation start and finish from this folder alone? |
+
+A project reaching the final review with many decisions, many requirements and no
+work breakdown is the failure this distinction exists to prevent. Deciding things
+is not planning them, and a count of decisions never compensates for missing
+operational coverage.
+
+**Definition-only is a legitimate destination.** A preliminary study, a concept
+note, a proposal, a tender, a feasibility analysis, a project not yet meant to be
+built — each of these is finished when its definition is finished. The user says
+so explicitly and the human authority records it. Then say, in these words:
+
+```
+Definition complete.
+Execution readiness not requested.
+This folder is not an execution package.
+```
+
+Never reach that conclusion by noticing that a project has no tasks.
+
+**When execution is intended**, before proposing the final review, complete the
+operational interview: who executes, with what autonomy, what needs approval,
+which responsibilities for architecture, implementation, verification, review and
+integration, how conflicts and scope changes are handled, what checkpoints and
+handoffs exist, what evidence closes a task, and what happens after delivery. Ask
+in the project's own domain: do not impose Git, repositories, software or AI
+agents on a building, a manufacturing line or an organisational change.
+
+**Propose the organisation; do not ask the user to invent it.** Complete the
+preliminary decomposition first, identify the skills, dependencies and genuine
+parallelism, then put a motivated configuration with its costs and alternatives
+and ask for approval or amendment. A single-executor project still records
+responsibility, checkpoints and review. Details in
+[references/multi-agent-system.md](references/multi-agent-system.md).
+
+Whether a project is ready is not a judgement you make in prose:
+`plangonaut execution-readiness` answers it deterministically, and `status`,
+`resume`, `next`, `validate --strict`, the context pack and `handoff-check` all
+carry the same verdict. The criteria are in
+[references/quality-gates.md](references/quality-gates.md) and the required
+information roles in [references/execution-package.md](references/execution-package.md).
+
+**Reading is recorded, not asserted.** When a plan rests on a file you read, record
+it with `plangonaut read-record`: the digest is what makes it evidence. Never claim
+a file was read on the strength of an earlier turn saying so, and never claim
+nothing read it when a valid record exists.
+
 ## Lifecycle
 
 Design the complete state machine in [references/lifecycle.md](references/lifecycle.md). It covers:
@@ -591,6 +649,9 @@ A Plangonaut initialization run is complete only when:
   or record `NOT APPLICABLE` with the reason;
 - no governing document is declared superseded without naming what replaced it;
 - any recommended project-agent system exists as reviewed prompts and operating instructions, not as agents silently launched by Plangonaut;
-- the user approves the resulting project system.
+- the user approves the resulting project system;
+- **the three states are reported separately**, and where execution was requested,
+  `plangonaut execution-readiness` passes. A project whose definition is complete and
+  whose operational plan is missing is reported as exactly that, never as complete.
 
 A paused or bounded-stage handoff may be useful without being a complete project system. Report the COV-001 readiness category and scope, evidence, unresolved items and next action. Never convert deferral into completeness. Do not start execution while required approval is outstanding.

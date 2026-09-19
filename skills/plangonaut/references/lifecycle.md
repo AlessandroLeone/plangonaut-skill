@@ -58,3 +58,27 @@ Monitor outcomes, incidents, costs, quality, user feedback, dependencies, securi
 - No step is announced as the last while a verification able to open new work is still outstanding. A pending gate is such a verification.
 - Maximum automatic repair attempts must be defined before execution; exhaustion escalates.
 - Resume begins by reading durable state and verifying it against the workspace, not by replaying the whole chat.
+
+## Three states of completeness
+
+Orthogonal to the phases above, and never merged with them or with each other.
+
+| State | Question | Where it is reported |
+|---|---|---|
+| Definition | is the project understood? | `status`, `resume`, `validate`, context pack |
+| Execution readiness | is the work executable? | `execution-readiness`, and every reader above |
+| Handoff readiness | can a stranger finish it? | `handoff-check` |
+
+A project may be well defined and not ready to execute. `status`, `resume`,
+`next`, `validate --strict`, the context pack and `handoff-check` make the
+difference explicit rather than reporting a single verdict.
+
+Definition-only is declared, never inferred: `plangonaut execution-intent
+--definition-only --reason "..."`. In that mode Plangonaut may declare the
+definition finished and says so in these words:
+
+```
+Definition complete.
+Execution readiness not requested.
+This folder is not an execution package.
+```
