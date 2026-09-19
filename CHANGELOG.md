@@ -1,16 +1,112 @@
 # Changelog
 
-## 0.3.0-alpha.5.dev.0 (unreleased)
+## 0.3.0-alpha.6
 
-Not published. Nothing here is on npm, carries a tag or a GitHub Release, or is
-served by the site; `0.3.0-alpha.5` remains the published Skill and CLI, and
-Studio remains `0.3.0-alpha.4`.
+Prepared, not yet published: this section describes the candidate built from
+this tree. Until a publication happens, `0.3.0-alpha.5` is what npm serves and
+what the GitHub Release holds.
 
 The same pilot that produced `0.3.0-alpha.5` produced a second, harder finding
 once the ten defects were closed: the folder read as settled while nothing had
 been settled. The engine was intact throughout, every command answered OK, and
 the record said the project had decided things nobody had decided. That is one
 defect wearing several faces, and this cycle closes them.
+
+**Three readinesses, and a project can be one without being the others.** A
+folder full of requirements and decisions is *defined*. It is not therefore
+executable, and it is not therefore something another person could pick up.
+Those were one word before, and a project with nothing to do next could call
+itself complete.
+
+`plangonaut execution-readiness --project-root . [--json]` answers the second
+question on its own: is there operational decomposition, does somebody own each
+piece, is there a way of building it and a package to hand over. `status --json`
+carries a `readiness` block, `handoff-check` keeps the third question, and the
+three verdicts are reported side by side rather than collapsed. Module 16 cannot
+be confirmed while execution readiness fails — a project cannot close on a claim
+its own record contradicts.
+
+`NOT REQUESTED` is a verdict too, and a deliberate one. A project that has said
+it is not building anything is not failing execution readiness; it has no
+execution to be ready for, and saying "failed" there would be a false alarm
+that trains people to ignore the real one.
+
+**Saying you will build it commits you to the interview about building it.**
+`execution-intent --execution | --definition-only --reason TEXT` records which
+kind of project this is, with a reason and an owner, as an event like everything
+else. Choosing `--execution` makes the operational interview required rather
+than optional: a project that intends to build cannot reach a complete state
+without answering how.
+
+**An organisation that is proposed is not an organisation that is approved.**
+`execution-org --executors N --mode TEXT --reviewer NAME --concurrency TEXT
+--handoff TEXT [--integrator NAME]` records how the work will actually be
+carried out — how many executors, working in what mode, who reviews, what runs
+at the same time as what, and how it is handed over. It is recorded as a
+proposal and becomes the project's own only when an owner approves it, by the
+same provenance rules as any other decision. An agent may propose the shape of
+the team; it may not decide it.
+
+**A task somebody could start, and a line back to why.** A task is executable
+when it says what is done, by whom, against which requirement, and what proves
+it. `read-record --path FILE --purpose TEXT [--conclusions TEXT] [--used-by IDS]`
+records that a file was read, why, and which records rest on it, so a conclusion
+drawn from a document can be traced back to the document it was drawn from
+instead of arriving in the ledger with no ancestry. `status --json` counts the
+recorded reads.
+
+**Mechanical integrity is not a thing a human can wave through.** A history with
+an event missing the replay fields is not reproducible, and no owner, override
+or approval makes it reproducible. It is reported by `validate`, it fails
+`validate --strict`, `replay --repair` refuses rather than quietly rebuilding a
+state that omits those events, and `handoff-check` blocks. The distinction
+matters because everything else in this product is a judgement somebody may
+overrule; this one is arithmetic.
+
+**A diagnosis before a baseline, and a baseline that states its own limits.**
+`baseline --reason TEXT --owner NAME` can be looked at before it is taken: what
+it would cover, what it would not, and what remains unproven afterwards. A
+baseline draws a line under a history that cannot be replayed; it does not
+pretend the history before the line was verified, and it says so in those words.
+
+**A writer says what it can write, and is told whether it may.** `compat-check
+--project-root . [--json] [--writer-engine NAME --writer-version V
+--writer-schema N --writer-event-format N --writer-reads-formats 1,2]` answers
+one question for one writer: may *this* engine append to *this* history. It is
+the question a second implementation has to ask before it writes, and the reason
+it exists is that one did not.
+
+**The document lock has a lifecycle, and four states it can be in.** `doc-lock`
+reads them, `doc-lock-acquire` and `doc-lock-release` are the ordinary pair,
+`doc-lock-recover` clears a lock whose session can be shown to have ended, and
+`doc-lock-force-release --reason TEXT` clears one that cannot — recording the
+reason, because a lock nobody can account for is cleared by a decision and a
+decision has an author. `FREE`, `MINE`, `HELD`, `STALE` and `LEGACY_UNKNOWN`
+are five different facts and were one bare name before.
+
+`LEGACY_UNKNOWN` is the one that mattered. A real project carried
+`lock_owner: "studio:Ale92"` for weeks: a holder's name with no session, no
+host, no process and no time. The panel showed a name and left the reader to
+conclude somebody was editing; nothing could establish that and it was not true.
+The advice in circulation — reopen the application, close the document, quit —
+could not have worked, because no code path in either implementation had ever
+released it. It is now classified as what it is: not live, not dead, not
+clearable without somebody saying why.
+
+**Every command a delegating writer drives answers in JSON.** The `doc-lock`
+family, `doc-mark-deletion`, `doc-finalize` and `doc-restore` take `--json`, and
+`doc-save` takes it too so that its one prose line — the idempotent retry —
+comes back parseable like the rest. A caller that cannot read "this already
+happened" has to treat a success as a failure, and a retry is the ordinary
+consequence of a lost reply rather than an exotic case.
+
+**The CLI is the only writer of governed events.** Plangonaut Studio used to
+serialise them itself. That second implementation of one format produced exactly
+the defect it was always going to — an event missing the digest and patch
+fields, appended to a history that had moved on, with nothing anywhere comparing
+the two writers. Studio now delegates every governed operation to this CLI and
+writes none of its own; what changed here is that the commands it needs all have
+a stable machine-readable answer.
 
 **Four kinds of statement, and only one of them is a decision.** Reading a folder
 authorises an agent to record *facts*. It does not authorise turning existing
@@ -118,15 +214,10 @@ that `re-record` refuses an unusable source without echoing the rejected path
 back as the remedy.
 
 Compatibility: no field is removed or made required on an existing project. A
-project written by `0.3.0-alpha.5` loads, validates and continues; what is new is
-reported, not refused. The state schema gains two optional blocks --
-`provenance` on a decision and `authored_by` on the forecast.
-
-The version is `0.3.0-alpha.5.dev.0` rather than `0.3.0-alpha.6.dev`, and the
-shape is the point: under SemVer precedence it sorts after `0.3.0-alpha.5` and
-before `0.3.0-alpha.6`, so a development version is orderable against the release
-it follows without claiming to be the next one. `versions.json` records it as
-`source` while `published` stays `0.3.0-alpha.5`.
+project written by `0.3.0-alpha.5` loads, validates and continues; what is new
+is reported, not refused. The state schema gains optional blocks only —
+`provenance` on a decision, `authored_by` on the forecast, `lock` on an
+artifact, and the execution-intent and organisation records.
 
 
 ## 0.3.0-alpha.5
