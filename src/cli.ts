@@ -847,7 +847,11 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   // A preview takes exactly what the save it previews takes. The intended
   // workflow is "run doc-diff with the arguments you are about to run doc-save
   // with", and a narrower list would refuse that.
-  "doc-diff": ["project-root", "id", "base-path", "content-file", "owner", "sources", "confirm-token", "expected-revision", "expected-hash"],
+  // `--session` and `--pid` are accepted and change nothing: a preview belongs
+  // to the same editing session as the save it precedes, and a caller that
+  // passes the pair to both should not be refused by the half that writes
+  // nothing.
+  "doc-diff": ["project-root", "id", "base-path", "content-file", "owner", "sources", "confirm-token", "expected-revision", "expected-hash", "session", "pid"],
   "doc-mark-deletion": ["project-root", "id", "target", "reason-file", "content-file", "owner", "expected-revision", "expected-hash", "operation-id"],
   "doc-save": ["project-root", "id", "base-path", "content-file", "owner", "sources", "confirm-token", "expected-revision", "expected-hash", "session", "pid", "operation-id"],
   "doc-history": ["project-root", "id"],
