@@ -308,6 +308,50 @@
             "items": {
               "type": "string"
             }
+          },
+          "lock": {
+            "$comment": "The editing session holding this document. Absent or null means unlocked; a non-empty lock_owner with no lock is a legacy record whose state cannot be established.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "required": [
+              "owner",
+              "session",
+              "host",
+              "acquired_at"
+            ],
+            "properties": {
+              "owner": {
+                "type": "string",
+                "minLength": 1
+              },
+              "session": {
+                "type": "string",
+                "minLength": 1
+              },
+              "host": {
+                "type": "string",
+                "minLength": 1
+              },
+              "pid": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "$comment": "The session's process, not the command's. Null is held-and-unprovable, never dead."
+              },
+              "acquired_at": {
+                "type": "string",
+                "minLength": 1
+              },
+              "renewed_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
           }
         }
       }
