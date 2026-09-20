@@ -339,8 +339,34 @@ The contract:
   it and why those first. After it, know what the answers changed.
 - **Keep going until coverage is complete.** A long conversation is not a
   finished phase, and neither is a tired one.
-- **Update the forecast after every block**, with `--author agent` when the
-  numbers are your reading. They usually are.
+- **Update the forecast when it has actually moved**, with `--author agent` when
+  the numbers are your reading. They usually are.
+
+  The loop is:
+
+  ```
+  question
+  -> qa-ask
+  -> answer
+  -> qa-answer
+  -> any decision, requirement or task it produced
+  -> forecast, when it materially changed
+  -> next question
+  ```
+
+  *Materially changed* means the ranges, the confidence or the cycle state are
+  no longer what you recorded: an answer that took something out of scope, one
+  that opened a area you had not counted, one that turned an assumption into a
+  fact. An answer that landed where you expected it to changes none of them, and
+  re-recording the same numbers after it costs an operation, a line of history
+  and a reader's attention for no new information. A forecast rewritten after
+  every answer is a forecast nobody reads, which is worse than one that moves
+  four times in an interview and says why each time.
+
+  `--change-reason` is required from the second forecast on, so every movement
+  carries its own explanation. Studio's live view shows the previous range
+  beside the new one and that sentence under both: what you write there is what
+  somebody watching the bar move will read.
 
 ### Breadth before depth, and depth declared
 
