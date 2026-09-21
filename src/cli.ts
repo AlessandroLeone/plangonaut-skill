@@ -3421,7 +3421,7 @@ function assertPendingState(root: string, state: State, event: any): void {
 
 function assertKnownOwner(state: any, owner: string): void {
   const known = new Set(Object.values(state.decision_owners ?? {}).map((value) => String(value).trim()));
-  if (!known.has(owner.trim())) throw new PlangonautError(`Owner is not one of the confirmed decision owners: ${owner}`);
+  if (!known.has(owner.trim())) throw new PlangonautError(`Owner is not one of the confirmed decision owners: ${owner}. The owners recorded at init are: ${[...known].sort().join(", ")}. Nothing was written.`);
 }
 
 function questionnaire(): any[] {
@@ -4744,8 +4744,8 @@ function init(flags: Flags): void {
   if (fs.existsSync(path.join(destination, "state.json")) || fs.existsSync(path.join(destination, "events.jsonl"))) throw new PlangonautError(`State already exists at ${destination}; use resume`);
   const projectMode = required(flags, "project-mode");
   const interactionMode = required(flags, "interaction-mode");
-  if (!PROJECT_MODES.has(projectMode)) throw new PlangonautError(`Unsupported project mode: ${projectMode}`);
-  if (!INTERACTION_MODES.has(interactionMode)) throw new PlangonautError(`Unsupported interaction mode: ${interactionMode}`);
+  if (!PROJECT_MODES.has(projectMode)) throw new PlangonautError(`Unsupported project mode: ${projectMode}. Use one of ${[...PROJECT_MODES].sort().join(", ")}. Nothing was written.`);
+  if (!INTERACTION_MODES.has(interactionMode)) throw new PlangonautError(`Unsupported interaction mode: ${interactionMode}. Use one of ${[...INTERACTION_MODES].sort().join(", ")}. Nothing was written.`);
   const owners = readJson(path.resolve(required(flags, "owners-file")));
   // Schema v3 closes `decision_owners` to exactly five roles, so a sixth cannot be
   // stored. It used to be dropped in silence: pilot B supplied `compliance` and
@@ -10952,7 +10952,7 @@ function applyModuleOutcome(
   at: string,
 ): { module: Module; outcome: string; nextActionNote: string | null; confirmationBlockers: string[] } {
   const outcome = input.status.toUpperCase().replaceAll("_", " ");
-  if (!MODULE_STATUSES.has(outcome)) throw new PlangonautError(`Unsupported module status: ${outcome}`);
+  if (!MODULE_STATUSES.has(outcome)) throw new PlangonautError(`Unsupported module status: ${outcome}. Use one of ${[...MODULE_STATUSES].sort().join(", ")}. Nothing was written.`);
   const sourcePath = path.resolve(input.answerFile);
   const answerRelative = path.relative(root, sourcePath);
   const answerRefusal = artifactPathRefusal("Answer evidence", answerRelative);
@@ -11253,7 +11253,7 @@ No --next-action was supplied and nothing a person had written was recorded, so 
 
 function ledgerMutation(kind: string, flags: Flags): void {
   const rule = LEDGER_RULES[kind];
-  if (!rule) throw new PlangonautError(`Unsupported ledger: ${kind}`);
+  if (!rule) throw new PlangonautError(`Unsupported ledger: ${kind}. Nothing was written.`);
   const root = resolveProject(required(flags, "project-root"));
   const key = idempotencyKey(flags);
   if (checkIdempotency(root, key)) return console.log(`Idempotent retry: ${kind} already applied.`);
@@ -11274,7 +11274,7 @@ function ledgerMutation(kind: string, flags: Flags): void {
   let unprovenanced = false;
   if (kind === "decision" || kind === "requirement" || kind === "task") {
     const status = required(flags, "status").toUpperCase();
-    if (!rule.statuses!.has(status)) throw new PlangonautError(`Unsupported ${kind} status: ${status}`);
+    if (!rule.statuses!.has(status)) throw new PlangonautError(`Unsupported ${kind} status: ${status}. Use one of ${[...rule.statuses!].sort().join(", ")}. Nothing was written.`);
     record = { id, title: required(flags, "title").trim(), status, owner };
     if (!record.title) throw new PlangonautError(`--title cannot be empty`);
 
@@ -11387,13 +11387,13 @@ function ledgerMutation(kind: string, flags: Flags): void {
     }
   } else if (kind === "dependency") {
     const type = required(flags, "type").toUpperCase();
-    if (!rule.statuses!.has(type)) throw new PlangonautError(`Unsupported dependency type: ${type}`);
+    if (!rule.statuses!.has(type)) throw new PlangonautError(`Unsupported dependency type: ${type}. Use one of ${[...rule.statuses!].sort().join(", ")}. Nothing was written.`);
     record = { id, from: required(flags, "from").toUpperCase(), to: required(flags, "to").toUpperCase(), type, owner };
   } else if (kind === "risk") {
     const status = required(flags, "status").toUpperCase();
     const severity = required(flags, "severity").toUpperCase();
-    if (!rule.statuses!.has(status)) throw new PlangonautError(`Unsupported risk status: ${status}`);
-    if (!new Set(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).has(severity)) throw new PlangonautError(`Unsupported risk severity: ${severity}`);
+    if (!rule.statuses!.has(status)) throw new PlangonautError(`Unsupported risk status: ${status}. Use one of ${[...rule.statuses!].sort().join(", ")}. Nothing was written.`);
+    if (!new Set(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).has(severity)) throw new PlangonautError(`Unsupported risk severity: ${severity}. Use one of LOW, MEDIUM, HIGH, CRITICAL. Nothing was written.`);
     record = { id, title: required(flags, "title").trim(), severity, status, owner };
     if (!record.title) throw new PlangonautError(`--title cannot be empty`);
   } else if (kind === "agent") {

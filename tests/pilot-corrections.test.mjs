@@ -513,7 +513,11 @@ test("every mutating example in the public documentation is complete and runnabl
        * operation id on a preview would demand one for a command that records
        * nothing, which teaches the opposite of what this check is for.
        */
-      const previewing = used.includes("dry-run");
+      // `sufficiency-review --template` prints the empty form to stdout and
+      // never opens a project. Same family as a preview: requiring an
+      // operation id on a command that records nothing teaches the opposite of
+      // what this check is for.
+      const previewing = used.includes("dry-run") || used.includes("template");
       const mutates = mutating.has(command) && (!gate || used.includes(gate)) && !previewing;
       if (mutates && !used.includes("operation-id")) {
         problems.push(`${relative}: \`plangonaut ${command}\` is a mutating command and the example has no --operation-id`);

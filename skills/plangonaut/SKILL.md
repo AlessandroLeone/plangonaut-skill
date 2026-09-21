@@ -23,6 +23,8 @@ Read [references/coverage-contract.md](references/coverage-contract.md) during d
 - **A mechanical failure cannot be decided away.** A history that does not reproduce its state, an event with no applicable mutation, a broken digest chain, an artifact written outside the flow — none of these is a matter of priority. There is no flag and no decision status that makes one acceptable, and both execution and handoff readiness fail while one stands. Never say you have stopped counting it. See [references/recovery.md](references/recovery.md).
 - **When the goal includes building the thing, the operational interview is not optional.** Modules 14 and 15 must be answered before the final review, and module 16 refuses while execution readiness fails.
 - Evidence precedes every readiness or completion claim.
+- **The engine checks soundness, not sufficiency.** Whether a plan is mechanically valid is its question; whether it is *enough* is yours, and it is recorded with `plangonaut sufficiency-review` rather than assumed from a passing command. A project nobody has judged is reported `NOT_READY`, and that is correct.
+- **A module outcome is the record of the module, not a summary of it.** See [references/module-depth.md](references/module-depth.md). A paragraph recorded `CONFIRMED` passes every mechanical check and records nothing.
 - No total cap on questions, documents, pages, prompts or investigation limits applicable coverage. Plan the whole agreed outcome and explicit resolution work for future-dependent detail.
 - Every consequential premise is evidenced, confirmed or visibly unresolved. Deferral is not resolution and may block execution.
 
@@ -503,7 +505,9 @@ Read [references/research-tools-and-skills.md](references/research-tools-and-ski
 
 In normal use, read the project folder and nothing else. Do not open files
 elsewhere on the machine, do not copy content in automatically, and never read
-another application's configuration or credentials.
+another application's configuration or credentials. The full boundary — what is
+forbidden outright, and how an authorised exception is asked for and recorded —
+is under *What you may read* below.
 
 When the user names a starting point that lives outside the project — existing
 code to reuse, a document to build on — ask the question that decides its fate
@@ -648,6 +652,181 @@ Before claiming a phase or project complete, apply [references/quality-gates.md]
 
 Report an operational forecast at every substantial update: known work, conditional work, observable quantities as ranges with a stated confidence and reason, cycle state, and what changed since the previous forecast. While a verification able to generate new work is outstanding, do not present any step as final or nearly final; growth that is becoming a loop is made visible early rather than absorbed silently. Read [references/interview-protocol.md](references/interview-protocol.md) for the exact wording, the loop conditions and what to show when raising one.
 
+## Driving the CLI
+
+Before the first command that changes anything, in this order:
+
+1. `plangonaut version` — which engine is actually installed.
+2. `plangonaut capabilities` — every command, its options, which are required,
+   which take a closed set of values, and one correct example for each.
+3. `plangonaut <command> --help` for the command you are about to run.
+
+**Do not invent a command or an option.** A concept in this documentation is not
+a command name. *Requirement-task coverage* is a concept; the command is
+`dependency`, one requirement to one task at a time, and several relations are
+several commands each with its own `--id` and `--operation-id`. If you cannot
+find a command for something, it does not exist: ask, or record the need as an
+open point. A guess that is refused costs a turn; a guess that is accepted for
+the wrong reason costs the record.
+
+### One mutation at a time
+
+- Never chain mutations with `;`, `&&`, `|` or a shell loop. Two commands in one
+  line are two operations the engine cannot relate, and a failure halfway leaves
+  you unable to say which half happened.
+- Run one command. **Read its output.** Then decide the next one.
+- Stop at the first error. Do not retry with a different guess, and do not carry
+  on to the next command as though the failed one had worked.
+- After an error, reconcile before continuing: `plangonaut status` and, where the
+  failure was mid-operation, `plangonaut recover`. An error message that says
+  *Nothing was written* means nothing was written; an error that does not say so
+  is one to check, not to assume.
+- Every mutating command takes a unique, stable `--operation-id`. The same id
+  means *this is the same operation, retried*; a new id means *this is a
+  different operation*. Reusing one across genuinely different writes is how two
+  changes become one, and generating a fresh one for a retry is how one change
+  becomes two.
+- Do not assume two commands are atomic together. They are not. If the second
+  fails, the first stands.
+
+## The repository is a fact, and facts do not decide
+
+When the project already contains code or configuration, inspect it **before**
+asking the user about it. Asking what framework a project uses when the manifest
+says so wastes the user's turn and teaches them the tool does not look.
+
+Then compare what you read with what the plan records, and write down every
+divergence. A pilot planned one major version of a framework while the
+repository had installed the next; approved an ORM that was never installed;
+kept an active requirement for a scheduled job that had been deleted. None of
+those was invisible — nothing had looked.
+
+**An observed fact never silently overrides a recorded decision, and a recorded
+decision never silently overrides an observed fact.** They are different kinds
+of thing: one is what *is*, the other is what somebody *chose*. When they
+disagree, that is a contradiction, and it is resolved the way contradictions are
+resolved below — by somebody deciding which prevails, and by that decision being
+recorded with its reason. Then update every document that depended on the loser.
+
+## Contradictions
+
+Before you propose closing anything, look for them deliberately:
+
+- between one governed document and another;
+- between the ledger and the documents;
+- between the plan and the repository as it actually is;
+- between a decision and a later decision that never superseded it.
+
+For each one: record the sources, put the question to the user or determine the
+answer from evidence you can point at, record which prevails and why, and update
+every artifact that rested on the other. Keep the reasoning — a reconciliation
+whose reason is lost is one somebody will undo.
+
+Unreconciled contradictions go into the sufficiency review with
+`reconciled: false`, and they block execution readiness until somebody decides.
+
+## Operational decisions
+
+A project that is going to be built needs its operating behaviour decided, not
+only its features. Before proposing that it is ready, check that the ones
+**relevant to this domain** are settled:
+
+data authority · states and transitions · concurrency · idempotency · timeouts ·
+retries · fallback · reconciliation · rollback · partial failure · security ·
+privacy · backup · restore · retention · observability · deployment ·
+responsibility · proof of completion
+
+**Adapt the list to the domain and say which ones you dropped.** Do not ask
+about a channel API in a building refurbishment, and do not ask about software
+rollback when the project is a bridge. A list recited in full is a list nobody
+reads; a list adapted without saying so is a list that quietly lost the item
+that mattered.
+
+Each one that is relevant and unsettled goes into the sufficiency review under
+`missing_decisions`, with why the work cannot start without it. Each one blocks.
+
+## The sufficiency review
+
+The engine checks what a deterministic engine can check: that the history
+replays, that the digests match, that requirements have tasks, that tasks have
+acceptance criteria and a way to verify them, that somebody is named for the
+work. It cannot check whether an acceptance criterion means anything, whether
+the error cases were thought about, or whether the plan still describes the
+repository. **It no longer pretends to**, and it will not report a project
+executable until somebody has said they looked.
+
+That is your job, and it is recorded:
+
+```
+plangonaut sufficiency-review --template > review.json     # the empty form
+plangonaut sufficiency-review --project-root . --file review.json \
+  --owner <owner> --operation-id <id>
+```
+
+Record what you **actually** checked, the sources you used, the contradictions
+you found, the operational decisions still missing, the error cases you
+examined, the limits the project accepts, what still has to be proven, and your
+conclusion: `SUFFICIENT`, `SUFFICIENT_WITH_LIMITS` or `INSUFFICIENT`.
+
+The engine does not grade the review. It verifies that one exists, that it is
+current against the plan it judged, that it is governed, and that its conclusion
+does not contradict the ledger. A review expires when the requirements,
+decisions, tasks, dependencies, risks, module documents or execution
+organisation change — because a judgement about one plan is not a judgement
+about the plan that replaced it.
+
+Writing `SUFFICIENT` because it makes a command pass is the one thing that
+breaks all of this. The review carries your name.
+
+## What you may read
+
+Read the project folder. In normal use, nothing else.
+
+**Never read, and never ask a tool to read on your behalf:**
+
+- transcripts, session logs or private memory belonging to any AI provider or
+  host — including your own, and including directories such as `.gemini`,
+  `.claude`, `.codex` or their equivalents;
+- credentials, tokens, keys, certificates, or any `.env` and its variants;
+- another application's configuration or profile;
+- anything under a user profile or application-data directory;
+- anything outside the project root.
+
+Exclude from what you record, quote or hand on: secrets, personal data that the
+work does not need, and the contents of dependency directories.
+
+When a source outside the governed root is genuinely necessary, **ask first, in
+plain words, naming the file and why**. If the user authorises it, record the
+read — what was read, its digest, who read it, and what for:
+
+```
+plangonaut read-record --project-root . --path <file> --purpose "<why>" \
+  --owner <owner> --operation-id <id>
+```
+
+A source that was needed and never recorded is a conclusion the next person
+cannot check.
+
+## How the three checks differ
+
+They answer three questions, and no one of them answers another's.
+
+| | question | fails on |
+| --- | --- | --- |
+| `validate --strict` | is the record sound? | schema, replay, references, digests, documents outside the record, structural gaps in the plan |
+| `handoff-check` | can somebody who was not here pick this up? | anything the folder needs and does not contain |
+| `execution-readiness` | is the work executable, or only defined? | mechanical, structural and semantic blockers, reported apart |
+
+`execution-readiness` answers in three levels:
+
+- **`NOT_READY`** — something blocks. The output says which kind.
+- **`CONDITIONALLY_READY`** — nothing blocks; the review recorded limits the
+  project accepts, or verifications still owed. Usable, with those in view.
+- **`READY`** — nothing blocks and nothing was set aside.
+
+Report all three checks separately and never let one stand for another. A
+project can be mechanically perfect and unbuildable.
+
 ## Safety and authority
 
 - Preserve originals, unrelated user changes, and repository history.
@@ -686,5 +865,34 @@ A Plangonaut initialization run is complete only when:
 - **the three states are reported separately**, and where execution was requested,
   `plangonaut execution-readiness` passes. A project whose definition is complete and
   whose operational plan is missing is reported as exactly that, never as complete.
+
+### What you may not say
+
+When any of these stands — an open decision, an unverified assumption, an
+unreconciled contradiction, an untreated risk, a missing document, a criterion
+nobody can check, or a sufficiency review that is absent, expired or
+`INSUFFICIENT` — these sentences are false, and writing one is the failure this
+whole cycle is about:
+
+- *validated in every respect*
+- *complete*
+- *ready with no reservations*
+- *fully verified*
+
+A pilot ended with the first of them while fourteen of its module documents were
+one paragraph each and its ledger approved a database the project had abandoned.
+Nobody lied: the tool had said `passed`, and the sentence was written from it.
+
+Say instead, separately and in these words:
+
+- **mechanical integrity** — does the record hold together? (`validate --strict`)
+- **structural completeness** — does the plan have the parts every plan needs?
+- **attested semantic sufficiency** — who judged it enough, when, and against
+  which version?
+- **operational readiness** — `NOT_READY`, `CONDITIONALLY_READY` or `READY`?
+- **residual limits** — what this plan does not cover, and what is still owed.
+
+Five statements, five answers. A reader who wants one word can have the fourth;
+a reader who is about to build has the other four.
 
 A paused or bounded-stage handoff may be useful without being a complete project system. Report the COV-001 readiness category and scope, evidence, unresolved items and next action. Never convert deferral into completeness. Do not start execution while required approval is outstanding.
