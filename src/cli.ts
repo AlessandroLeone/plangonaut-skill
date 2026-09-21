@@ -15594,8 +15594,18 @@ export async function main(argv: string[]): Promise<number> {
        * feasibility study passing `--strict` is correct.
        */
       const strictReadiness = readinessReport(state, root);
+      /*
+       * Structural, and deliberately not semantic.
+       *
+       * `--strict` asks whether the folder is mechanically fit to leave. Whether
+       * somebody has *judged* the plan good enough is a different question with
+       * a different answer and a different remedy, and folding it in here would
+       * make an integrity check fail for want of a human opinion — which is the
+       * one thing `validate` must never do. `execution-readiness` is where that
+       * lives, and it says so in its own words.
+       */
       const strictExecution = strictReadiness.intent === "YES" && strictReadiness.execution.verdict === "FAILED"
-        ? strictReadiness.execution.findings
+        ? (strictReadiness.execution.causes?.structural ?? strictReadiness.execution.findings)
         : [];
       if (flags.strict === true && (unclaimed.findings.length || coherence.length || strictExecution.length)) {
         const parts: string[] = [];
