@@ -976,9 +976,23 @@ function parse(argv: string[]): { command: string; flags: Flags } {
   return { command, flags };
 }
 
+/**
+ * Which command is running, for the error messages that need to name it.
+ *
+ * `required()` is called from about two hundred places and none of them passes
+ * the command name; threading it through all of them to improve one sentence
+ * would be a larger change than the defect. This is set once, at dispatch,
+ * before anything is read or written.
+ */
+let CURRENT_COMMAND = "";
+
 function required(flags: Flags, key: string): string {
   const val = flags[key];
-  if (typeof val !== "string") throw new PlangonautError(`Missing required option --${key}`);
+  if (typeof val !== "string") {
+    throw new PlangonautError(
+      CURRENT_COMMAND ? missingOptionMessage(CURRENT_COMMAND, key) : `Missing required option --${key}. Nothing was written.`
+    );
+  }
   return val;
 }
 
@@ -4667,7 +4681,34 @@ function contextMarkdown(state: State, forecastHistoryEntries = 0): string {
   return lines.join("\n");
 }
 
+/**
+ * What this engine is, and what its commands take.
+ *
+ * It used to answer the first half only: a version, a schema number, three
+ * lists of modes. An agent instructed to run this before its first mutation
+ * learned nothing about the grammar and invented `plangonaut coverage` — which
+ * is not a failure of the instruction, it is the instruction being impossible
+ * to follow.
+ *
+ * `commands` is generated from the same tables the parser uses, so it cannot
+ * describe a command surface that does not exist.
+ */
 function capabilities(): void {
+  const commands: Record<string, unknown> = {};
+  for (const name of Object.keys(COMMAND_OPTIONS).sort()) {
+    const grammar = COMMAND_GRAMMAR[name];
+    const requiredOptions = grammar?.required ?? [];
+    commands[name] = {
+      summary: grammar?.summary ?? null,
+      options: COMMAND_OPTIONS[name],
+      required: requiredOptions,
+      optional: COMMAND_OPTIONS[name].filter((option) => !requiredOptions.includes(option)),
+      values: grammar?.values ?? {},
+      mutating: COMMAND_OPTIONS[name].includes("operation-id") && name !== "migrate-brand",
+      example: grammar?.example ?? null,
+      note: grammar?.note ?? null,
+    };
+  }
   console.log(JSON.stringify({
     beave_version: VERSION,
     schema_version: SCHEMA_VERSION,
@@ -4677,7 +4718,19 @@ function capabilities(): void {
     network_required: false,
     profiles: ["Hybrid", "Semantic-only"],
     project_modes: [...PROJECT_MODES].sort(),
-    interaction_modes: ["Guided", "Standard", "Expert"]
+    interaction_modes: ["Guided", "Standard", "Expert"],
+    /*
+     * Said in the payload as well as in the table, because an agent reads the
+     * top of a JSON document and acts. Every one of these was a real mistake.
+     */
+    grammar_notes: [
+      "Every option a command accepts is listed under commands.<name>.options. An option not listed is refused, not ignored.",
+      "One command, one mutation. Do not chain mutations with ; or && : read each result before the next.",
+      "Every mutating command needs a unique, stable --operation-id. A retry of the same operation reuses it; a different operation must not.",
+      "Requirement-task coverage is recorded with dependency, one requirement to one task per command. There is no coverage command.",
+      "plangonaut <command> --help prints this command's options, accepted values and one correct example.",
+    ],
+    commands,
   }, null, 2));
 }
 
@@ -13842,6 +13895,287 @@ const COMMAND_HELP: Record<string, string> = {
   ].join("\n"),
 };
 
+/**
+ * What each command actually takes, in one table that several readers use.
+ *
+ * WHY THIS EXISTS
+ * ---------------
+ * An agent driving the pilot invented `plangonaut coverage`. It was told to run
+ * `capabilities` before its first mutation, and `capabilities` answered with a
+ * version, a schema number and three lists of modes — nothing about commands,
+ * nothing about options, nothing about which values an option accepts. So the
+ * agent did what the instruction could not prevent: it turned a concept from
+ * the documentation, *requirement-task coverage*, into a command name.
+ *
+ * The same absence produced the rest of the session's friction. `task --help`
+ * was refused although the general help promises that every command takes it.
+ * `task` without `--status` answered *Missing required option --status* and
+ * stopped there, naming neither the six values it accepts nor one correct line.
+ *
+ * All four are the same defect: the engine knows its own grammar and had no way
+ * to say it. This table is that grammar, and `--help`, `capabilities`, the
+ * missing-option error and the unknown-command suggestion are all readers of it.
+ * One table, so they cannot drift into describing different products.
+ *
+ * WHAT IT DOES NOT DO
+ * -------------------
+ * It does not replace `COMMAND_OPTIONS`, which is the accept/refuse list and
+ * stays the authority on what is allowed. This says which of those are
+ * required, which take a closed set of values, and what one correct invocation
+ * looks like. A command absent from here still gets help, synthesised from its
+ * options; it simply gets a plainer page.
+ */
+interface CommandGrammar {
+  /** One line: what the command is for. */
+  summary: string;
+  /** Options without which it refuses. */
+  required?: string[];
+  /** Options whose values are a closed set. */
+  values?: Record<string, string[]>;
+  /** One invocation that works, copied verbatim into the error. */
+  example?: string;
+  /** What a caller reaching for this command usually needs to know as well. */
+  note?: string;
+}
+
+const COMMAND_GRAMMAR: Record<string, CommandGrammar> = {
+  capabilities: {
+    summary: "what this engine is and what its commands take. Read it before the first mutation.",
+    example: "plangonaut capabilities",
+  },
+  version: { summary: "the engine version, one line.", example: "plangonaut version" },
+  init: {
+    summary: "create a project ledger in an empty folder.",
+    required: ["project-root", "project-name", "project-mode", "interaction-mode", "owners-file", "operation-id"],
+    values: { "project-mode": [...PROJECT_MODES].sort(), "interaction-mode": ["Guided", "Standard", "Expert"] },
+    example: `plangonaut init --project-root . --project-name "My project" --project-mode Resume --interaction-mode Standard --owners-file owners.json --operation-id OP-INIT`,
+  },
+  requirement: {
+    summary: "record or update a requirement: something the result has to do.",
+    required: ["project-root", "id", "title", "status", "owner", "operation-id"],
+    values: { status: ["DRAFT", "ACTIVE", "SUPERSEDED", "REJECTED"] },
+    example: `plangonaut requirement --project-root . --id REQ-001 --title "Guests can book directly" --status ACTIVE --owner Ada --operation-id OP-REQ-001`,
+  },
+  decision: {
+    summary: "record or update a decision: something that was chosen, and by whom.",
+    required: ["project-root", "id", "title", "status", "owner", "operation-id"],
+    values: { status: ["PROPOSED", "APPROVED", "SUPERSEDED", "REJECTED"] },
+    example: `plangonaut decision --project-root . --id DEC-001 --title "MySQL on the existing plan" --status APPROVED --owner Ada --operation-id OP-DEC-001`,
+  },
+  task: {
+    summary: "record or update a task: a piece of work somebody can pick up.",
+    required: ["project-root", "id", "title", "status", "owner", "operation-id"],
+    values: {
+      status: ["BACKLOG", "READY", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"],
+      kind: ["IMPLEMENTATION", "DESIGN", "RESEARCH", "REVIEW", "ADMIN", "COORDINATION"],
+    },
+    example: `plangonaut task --project-root . --id TSK-001 --title "Booking hold on the channel API" --status READY --owner Ada --kind IMPLEMENTATION --requirements REQ-001 --acceptance "A hold is taken, expires in 15 minutes, and a second checkout for the same dates is refused" --verification "Integration test against the sandbox" --evidence-expected "Test run output attached as evidence" --operation-id OP-TSK-001`,
+    note: "A task with no acceptance, no verification and no requirement of origin is a title. execution-readiness reports it as one.",
+  },
+  dependency: {
+    summary: "link one requirement to one task, or one task to another.",
+    required: ["project-root", "id", "from", "to", "type", "owner", "operation-id"],
+    values: { type: ["REQUIRES", "BLOCKS", "RELATES_TO"] },
+    example: `plangonaut dependency --project-root . --id DEP-001 --from REQ-001 --to TSK-001 --type REQUIRES --owner Ada --operation-id OP-DEP-001`,
+    note:
+      "One relation per command. Requirement-task coverage is built out of these, one link at a time: " +
+      "three requirements covered by three tasks are three dependency commands with three ids and three " +
+      "operation ids, not one command taking a list. There is no command that records coverage in bulk.",
+  },
+  risk: {
+    summary: "record or update a risk, its severity and how it is being carried.",
+    required: ["project-root", "id", "title", "severity", "status", "owner", "operation-id"],
+    values: {
+      severity: ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+      status: ["IDENTIFIED", "MITIGATED", "ACCEPTED", "CLOSED"],
+    },
+    example: `plangonaut risk --project-root . --id RSK-001 --title "The channel API changes without notice" --severity HIGH --status IDENTIFIED --owner Ada --operation-id OP-RSK-001`,
+    note: "A risk that is neither MITIGATED nor ACCEPTED needs a treatment as well as an owner; execution-readiness asks for one.",
+  },
+  record: {
+    summary: "record the outcome of an interview module against a file.",
+    required: ["project-root", "module", "status", "answer-file", "owner", "operation-id"],
+    values: { status: ["CONFIRMED", "PARTIAL", "SKIPPED", "NOT_APPLICABLE"] },
+    example: `plangonaut record --project-root . --module 7 --status CONFIRMED --answer-file docs/module-7-outcome.md --owner Ada --operation-id OP-MOD-7`,
+    note: "The file is the module's outcome, not a summary of it. What an applicable module has to cover is in references/module-depth.md.",
+  },
+  gate: {
+    summary: "record a gate as passed or failed, against evidence.",
+    required: ["project-root", "id", "status", "evidence-file", "owner", "operation-id"],
+    values: { status: ["PASSED", "FAILED"] },
+    example: `plangonaut gate --project-root . --id G2 --status PASSED --evidence-file evidence_g2.md --owner Ada --operation-id OP-G2`,
+  },
+  "execution-intent": {
+    summary: "declare whether this project is meant to be built or only defined.",
+    required: ["project-root", "reason", "owner", "operation-id"],
+    example: `plangonaut execution-intent --project-root . --execution --reason "The owner approved the build" --owner Ada --operation-id OP-INTENT`,
+    note: "Exactly one of --execution or --definition-only. The engine never infers this from the absence of tasks.",
+  },
+  "execution-org": {
+    summary: "record who executes the work, who reviews it and how it is handed over.",
+    required: ["project-root", "executors", "mode", "reviewer", "concurrency", "handoff", "owner", "operation-id"],
+    example: `plangonaut execution-org --project-root . --executors 2 --mode Agentic --reviewer Ada --concurrency "One task per component at a time" --handoff "Review passes before the next task starts" --integrator Ada --owner Ada --operation-id OP-ORG`,
+  },
+  "sufficiency-review": {
+    summary: "record the semantic sufficiency review: what was checked, what is missing, and the conclusion.",
+    required: ["project-root", "file", "owner", "operation-id"],
+    example: `plangonaut sufficiency-review --project-root . --file review.json --owner Ada --operation-id OP-SUFF-1`,
+    note:
+      "The file is JSON. plangonaut sufficiency-review --template writes an empty one with every field and what it means. " +
+      "The engine does not judge whether the review is intelligent; it checks that it exists, that it is current, and that " +
+      "its conclusion does not contradict what the ledger records.",
+  },
+  validate: {
+    summary: "mechanical integrity: schema, replay, references, digests. Not a judgement about the plan.",
+    required: ["project-root"],
+    example: "plangonaut validate --project-root . --strict",
+  },
+  "handoff-check": {
+    summary: "could somebody who was not in the conversation pick this folder up?",
+    required: ["project-root"],
+    example: "plangonaut handoff-check --project-root .",
+  },
+  "execution-readiness": {
+    summary: "is the work executable, or only defined? NOT_READY, CONDITIONALLY_READY or READY.",
+    required: ["project-root"],
+    example: "plangonaut execution-readiness --project-root .",
+  },
+  "read-record": {
+    summary: "record that a source outside the governed root was read, and why.",
+    required: ["project-root", "path", "purpose", "owner", "operation-id"],
+    example: `plangonaut read-record --project-root . --path package.json --purpose "Confirm the framework major version against the plan" --owner Ada --operation-id OP-READ-1`,
+  },
+};
+
+/** Levenshtein distance, capped: only used to decide whether to suggest at all. */
+function editDistance(a: string, b: string): number {
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  let previous = Array.from({ length: cols }, (_unused, index) => index);
+  for (let row = 1; row < rows; row += 1) {
+    const current = [row];
+    for (let col = 1; col < cols; col += 1) {
+      current[col] = Math.min(
+        previous[col] + 1,
+        current[col - 1] + 1,
+        previous[col - 1] + (a[row - 1] === b[col - 1] ? 0 : 1)
+      );
+    }
+    previous = current;
+  }
+  return previous[cols - 1];
+}
+
+/**
+ * Commands a mistyped or invented name might have meant.
+ *
+ * Nearness of spelling first, which catches a typo. Then the concepts an agent
+ * is documented to need and might name after the idea rather than the command —
+ * `coverage` is the one the pilot invented, and the answer to it is not a new
+ * command but the one that already does the job.
+ */
+const CONCEPT_ALIASES: Record<string, { command: string; because: string }> = {
+  coverage: {
+    command: "dependency",
+    because:
+      "Requirement-task coverage is recorded as dependencies, one relation at a time: " +
+      "--from REQ-ID --to TSK-ID --type REQUIRES. Several relations are several commands, " +
+      "each with its own --id and --operation-id. There is no bulk coverage command.",
+  },
+  "requirement-coverage": { command: "dependency", because: "Coverage is dependencies: one requirement to one task per command." },
+  link: { command: "dependency", because: "Links between records are dependencies." },
+  trace: { command: "dependency", because: "Traceability between a requirement and a task is a dependency." },
+  readiness: { command: "execution-readiness", because: "The readiness verdict is execution-readiness." },
+  ready: { command: "execution-readiness", because: "The readiness verdict is execution-readiness." },
+  check: { command: "validate", because: "Mechanical integrity is validate; handoff-check and execution-readiness answer the other two questions." },
+  handoff: { command: "handoff-check", because: "The handoff question is handoff-check." },
+  sufficiency: { command: "sufficiency-review", because: "The semantic review is recorded with sufficiency-review." },
+  review: { command: "sufficiency-review", because: "The semantic review is recorded with sufficiency-review." },
+  org: { command: "execution-org", because: "Who executes the work is execution-org." },
+  organization: { command: "execution-org", because: "Who executes the work is execution-org." },
+  organisation: { command: "execution-org", because: "Who executes the work is execution-org." },
+};
+
+function unknownCommandMessage(command: string): string {
+  const known = Object.keys(COMMAND_OPTIONS).sort();
+  const alias = CONCEPT_ALIASES[command.toLowerCase()];
+  const near = known
+    .map((name) => ({ name, distance: editDistance(command.toLowerCase(), name) }))
+    .filter((entry) => entry.distance <= Math.max(2, Math.floor(command.length / 3)))
+    .sort((first, second) => first.distance - second.distance)
+    .slice(0, 3)
+    .map((entry) => entry.name);
+
+  const lines = [`Unknown command: ${command}. Nothing was read and nothing was written.`];
+  if (alias) {
+    lines.push(``, `You probably want: plangonaut ${alias.command}`, alias.because);
+    const grammar = COMMAND_GRAMMAR[alias.command];
+    if (grammar?.example) lines.push(``, grammar.example);
+  } else if (near.length) {
+    lines.push(``, `Did you mean: ${near.join(", ")}?`);
+  }
+  lines.push(``, `plangonaut capabilities lists every command and what it takes.`);
+  return lines.join("\n");
+}
+
+/**
+ * The help page for one command.
+ *
+ * Hand-written where a command has a flow worth explaining; synthesised from
+ * the tables otherwise. Synthesised is not a placeholder — an agent needs the
+ * option list and the accepted values far more than it needs prose, and those
+ * are the parts that cannot go out of date here because they are the same
+ * tables the parser uses.
+ */
+function synthesisedHelp(command: string): string {
+  const options = COMMAND_OPTIONS[command];
+  if (!options) return "";
+  const grammar = COMMAND_GRAMMAR[command];
+  const requiredOptions = new Set(grammar?.required ?? []);
+  const lines: string[] = [];
+  lines.push(`plangonaut ${command}${grammar ? ` — ${grammar.summary}` : ""}`);
+  lines.push(``);
+  if (!options.length) {
+    lines.push(`Takes no options.`);
+  } else {
+    lines.push(`Options:`);
+    for (const option of options) {
+      const values = grammar?.values?.[option];
+      const marks = [requiredOptions.has(option) ? "required" : "optional"];
+      if (values) marks.push(`one of: ${values.join(", ")}`);
+      lines.push(`  --${option.padEnd(22)} ${marks.join(" · ")}`);
+    }
+  }
+  if (grammar?.example) lines.push(``, `Example:`, `  ${grammar.example}`);
+  if (grammar?.note) lines.push(``, grammar.note);
+  return lines.join("\n");
+}
+
+function anyCommandHelp(command: string): string | null {
+  const written = COMMAND_HELP[command];
+  if (written) return written;
+  const synthesised = synthesisedHelp(command);
+  return synthesised || null;
+}
+
+/**
+ * A missing required option, said so that the next attempt succeeds.
+ *
+ * *Missing required option --status* is true and leaves the caller to find the
+ * six accepted values somewhere else. The pilot's agent did not find them: it
+ * guessed, was refused again, and guessed again.
+ */
+function missingOptionMessage(command: string, key: string): string {
+  const grammar = COMMAND_GRAMMAR[command];
+  const values = grammar?.values?.[key];
+  const lines = [`Missing required option --${key}. Nothing was written.`];
+  if (values) lines.push(`Accepted values: ${values.join(", ")}.`);
+  if (grammar?.required?.length) lines.push(`${command} requires: ${grammar.required.map((item) => `--${item}`).join(", ")}.`);
+  if (grammar?.example) lines.push(``, `A correct call:`, `  ${grammar.example}`);
+  lines.push(``, `plangonaut ${command} --help repeats this.`);
+  return lines.join("\n");
+}
+
 function commandHelp(command: string): string | null {
   return COMMAND_HELP[command] ?? null;
 }
@@ -14584,12 +14918,20 @@ export async function main(argv: string[]): Promise<number> {
   runningCommand = argv[0] ?? "beave";
   try {
     const { command, flags } = parse(argv);
+    CURRENT_COMMAND = command ?? "";
     // `--help` is answered before the options are checked, and before anything
     // is required. Someone reaching for it does not know the options yet — that
     // is what they are asking — so refusing them for an unknown one, or for a
     // missing `--project-root`, answers a question nobody asked.
-    if (flags.help === true && command && commandHelp(command)) {
-      console.log(commandHelp(command));
+    /*
+     * `--help` works on every command.
+     *
+     * The general help promises it — "Any command takes --help" — and it was
+     * true of seven. `task --help` was refused as an unknown option, which is
+     * the worst of both: the documentation says to ask, and asking is an error.
+     */
+    if (flags.help === true && command && anyCommandHelp(command)) {
+      console.log(anyCommandHelp(command));
       return 0;
     }
     assertKnownOptions(command, flags);
@@ -14751,7 +15093,7 @@ export async function main(argv: string[]): Promise<number> {
     else if (command === "export") exportTarget(flags);
     else if (command === "install") install(flags);
     else if (command === "verify-install") verifyInstall(flags);
-    else throw new PlangonautError(`Unknown command: ${command}`);
+    else throw new PlangonautError(unknownCommandMessage(command));
     return reportedExitCode;
   } catch (error: any) {
     /*
