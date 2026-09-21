@@ -1,10 +1,140 @@
 # Changelog
 
+## 0.3.0-alpha.7
+
+Prepared from a second real pilot: a small booking site whose ledger said it was
+ready to build. The engine was intact. Every command answered OK. `validate
+--strict` and `handoff-check` both failed on twenty-two findings — and
+`execution-readiness` printed two lines, the second of which was `passed`.
+
+What it was passing was a project with fourteen module outcome documents of one
+paragraph each, an `APPROVED` decision naming a database the project had
+abandoned, an `APPROVED` ORM that was never installed, an `ACTIVE` requirement
+for a scheduled job that had been deleted, acceptance criteria reading *Env ok*
+and *OTP pass*, and a `HIGH` risk carrying no treatment.
+
+Nothing was broken. Every structural check was satisfied, because every
+structural check *was* satisfied: the documents existed, the fields were
+non-empty, the requirements had tasks. The report written from that verdict said
+the project had been "validated in every respect", and nobody lied — the tool
+had said so.
+
+### A deterministic engine cannot judge sufficiency, and has stopped claiming to
+
+*Is this acceptance criterion meaningful*, *were the error cases thought about*,
+*does this plan still describe this repository* are not questions this engine can
+answer. What it **can** check about the part it cannot judge is whether a review
+exists, is current, is governed, and whether its conclusion contradicts the
+ledger.
+
+```
+plangonaut sufficiency-review --template > review.json
+plangonaut sufficiency-review --project-root . --file review.json --owner Ada --operation-id op-review-1
+```
+
+The review records what was checked, the sources, the contradictions found, the
+operational decisions still missing, the error cases examined, the limits the
+project accepts, what remains to be proven, the conclusion and its author. The
+engine never grades it. It records whose judgement it was and against which
+version of the plan — and expires it when requirements, decisions, tasks,
+dependencies, risks, module documents or the execution organisation change,
+because a judgement about one plan is not a judgement about the plan that
+replaced it. An unrelated write does not expire it; expiring on every write
+would train people to re-stamp a review unread.
+
+One object in the ledger, one command, committed as an event and replayed like
+everything else. No second store.
+
+### `execution-readiness` answers in three levels
+
+- **`NOT_READY`** (exit 2) — something blocks.
+- **`CONDITIONALLY_READY`** (exit 1) — nothing blocks; the review recorded
+  limits the project accepts, or verifications still owed.
+- **`READY`** (exit 0) — nothing blocks and nothing was set aside.
+
+Causes are reported apart, because a stale digest, a task nobody can verify and
+a payment flow nobody considered are three problems with three remedies:
+mechanical, structural, semantic, accepted limits, verifications required. And
+the verdict now states **what it did not judge**, which is how `passed` became
+"validated in every respect".
+
+New deterministic findings: an untreated `HIGH` or `CRITICAL` risk; a task with
+no acceptance criterion; a task with neither a verification nor expected
+evidence; a `PROPOSED` decision that work depends on. Mechanical now includes
+every recorded digest against its file — `validate --strict` reported those and
+readiness did not, so the engine held two answers about one folder and showed
+whichever was asked for.
+
+`validate --strict` keeps its meaning. It takes the structural findings and not
+the semantic ones: an integrity check that fails for want of a human opinion is
+the one thing it must never be.
+
+### The engine knew its own grammar and had no way to say it
+
+The same pilot's agent was told to run `capabilities` before its first mutation.
+`capabilities` answered with a version, a schema number and three lists of modes
+— no commands, no options, no accepted values — so it invented `plangonaut
+coverage` out of a concept in the documentation. Then `task --help` was refused
+as an unknown option although the general help promises every command takes it,
+and `task` without `--status` named none of its six values.
+
+- `capabilities` now carries all 63 commands with options, required lists,
+  accepted values, whether they mutate, and an example each.
+- `--help` works on every command.
+- A missing required option names the accepted values and prints a call that
+  works.
+- An unknown command suggests. `coverage` answers with `dependency` and the
+  reason: coverage is one requirement to one task per command, several relations
+  are several commands, and there is no bulk command. The invented name was not
+  added; the real one was made impossible to miss.
+- Every enum refusal names its accepted values, and every refusal says nothing
+  was written.
+
+### The skill
+
+Five new sections, all from that session. **Driving the CLI**: find out before
+guessing, one mutation at a time, stop at the first error, a unique stable
+operation id, two commands are never atomic together. **The repository is a
+fact, and facts do not decide**: inspect the code before asking about it, and
+when a fact and a decision disagree that is a contradiction to reconcile, not a
+silent overwrite. **Contradictions**, looked for in four places before anything
+closes. **Operational decisions**, adapted to the domain with the adaptation
+stated. **What you may read**: never a provider's transcripts or private memory,
+never `.gemini`, `.claude` or `.codex`, never credentials or `.env`, never
+another application's profile, never outside the root — and an authorised
+exception asked for in plain words and recorded with `read-record`.
+
+`references/module-depth.md` says what an applicable module records, and why it
+is not a word count: a length rule is the easiest thing to satisfy without doing
+the work, and would fail a short honest document while passing a long empty one.
+
+And **what you may not say**: *validated in every respect*, *complete*, *ready
+with no reservations* are false while anything is open. Five statements replace
+the one word — mechanical integrity, structural completeness, attested semantic
+sufficiency, operational readiness, residual limits.
+
+### Projects made before this
+
+Nothing about the new contract makes an older project invalid. `validate` still
+confirms its integrity and `replay` still reproduces it. `execution-readiness`
+reports `NOT_READY` and says the review is missing, naming the command that
+records one. No field is invented, no earlier verdict is reinterpreted as if it
+had been a semantic judgement, and nothing is migrated: recording a review is a
+deliberate act, and the first one is the migration.
+
+Projects that had `execution readiness: passed` before this release will read
+`NOT_READY` after it. That is the correction, not a regression.
+
+### Tests
+
+512, from 480. Twenty of them rebuild the pilot's shape from its defects rather
+than copying it — no business, no names, no domains, no vendors, no credentials
+— and twelve drive the binary to check the grammar rather than searching the
+skill for sentences.
+
 ## 0.3.0-alpha.6
 
-Prepared, not yet published: this section describes the candidate built from
-this tree. Until a publication happens, `0.3.0-alpha.5` is what npm serves and
-what the GitHub Release holds.
+Published to npm and tagged `v0.3.0-alpha.6`.
 
 The same pilot that produced `0.3.0-alpha.5` produced a second, harder finding
 once the ten defects were closed: the folder read as settled while nothing had

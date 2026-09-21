@@ -394,6 +394,22 @@ command is running and delete the file yourself.
 running at that moment: the record had no `host` field, and "not this machine"
 was being read as "another machine".*
 
+### Projects older than this release's sufficiency gate
+
+A project recorded before `0.3.0-alpha.7` has no sufficiency review, and nothing
+about that makes it invalid. `plangonaut validate` still confirms its integrity
+and `plangonaut replay --verify` still reproduces it from its own history.
+
+What changes is `execution-readiness`: it reports `NOT_READY` and says the review
+is missing, naming the command that records one. Nothing is migrated and no field
+is invented — recording the first review *is* the migration, and it is a
+deliberate act rather than something a tool does on your behalf. An earlier
+`passed` is not reinterpreted as a semantic judgement, because it never was one.
+
+If a project of yours read `passed` before this release and reads `NOT_READY`
+after it, nothing has gone backwards. The question changed, and the old answer was
+to a question nobody had asked.
+
 ### Projects older than this
 
 A project created by an earlier Plangonaut has a history that records *digests* of
@@ -448,6 +464,72 @@ plangonaut execution-readiness --project-root .
 
 `status`, `resume`, `next`, `validate`, the context pack and `handoff-check` all
 carry the same answer.
+
+### The three checks, and what each one is for
+
+| | question | fails on |
+| --- | --- | --- |
+| `validate --strict` | is the record sound? | schema, replay, references, digests, documents outside the record, structural gaps in the plan |
+| `handoff-check` | can somebody who was not here pick this up? | anything the folder needs and does not contain |
+| `execution-readiness` | is the work executable, or only defined? | mechanical, structural and semantic blockers, reported apart |
+
+None of them answers another's question, and `validate --strict` in particular is
+not a judge of whether a plan is any good. It checks that the record holds
+together. An integrity check that failed for want of a human opinion would be
+useless for the thing integrity checks are for.
+
+### Ready, conditionally ready, not ready
+
+`execution-readiness` gives one of three answers, and the exit code matches:
+
+- **`NOT_READY`** (exit 2) — something blocks. The output separates what kind:
+  mechanical, structural, or a judgement nobody has made.
+- **`CONDITIONALLY_READY`** (exit 1) — nothing blocks. The sufficiency review
+  recorded limits the project accepts, or verifications still owed, and both are
+  listed. This is the honest answer for most real projects.
+- **`READY`** (exit 0) — nothing blocks and nothing was set aside.
+
+It also prints what it did **not** judge. A verdict with no statement of its own
+scope is how a passing command became "validated in every respect" in a report.
+
+### The sufficiency gate
+
+Plangonaut checks that the record is sound. It cannot check whether an acceptance
+criterion means anything, whether the error cases were thought about, or whether
+the plan still describes the repository — and it no longer behaves as though it
+could. Until somebody records a judgement, `execution-readiness` says `NOT_READY`
+and names what is missing.
+
+```
+plangonaut sufficiency-review --template > review.json
+```
+
+Fill it in: what you checked, the sources you used, the contradictions you found,
+the operational decisions still missing, the error cases you examined, the limits
+the project accepts, what still has to be proven, and your conclusion —
+`SUFFICIENT`, `SUFFICIENT_WITH_LIMITS` or `INSUFFICIENT`. Then:
+
+```
+plangonaut sufficiency-review --project-root . --file review.json --owner Ada --operation-id op-review-1
+```
+
+Plangonaut does not grade the review. It records **whose** judgement it was, what
+they looked at, and **which version of the plan** they looked at — and it expires
+the review when the requirements, decisions, tasks, dependencies, risks, module
+documents or execution organisation change. A judgement about one plan is not a
+judgement about the plan that replaced it. Writing something unrelated, like a
+checkpoint, does not expire it.
+
+An unreconciled contradiction or a missing operational decision recorded in the
+review blocks readiness until somebody decides. That is deliberate: the point of
+writing them down is that they stop being forgettable.
+
+### Resuming after an interruption
+
+The review, like everything else, is an event. `plangonaut resume` picks up where
+you left off, `plangonaut replay --verify` proves the state still follows from
+its history, and a review recorded before the interruption is still there and
+still current unless the plan moved under it.
 
 ### If you only want the definition
 
