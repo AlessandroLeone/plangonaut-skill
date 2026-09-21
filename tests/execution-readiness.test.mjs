@@ -50,6 +50,7 @@ function run(...args) {
   const needsOperation = [
     "record", "decision", "requirement", "task", "dependency", "risk", "evidence", "agent",
     "checkpoint", "gate", "execution-intent", "execution-org", "read-record", "doc-save", "doc-finalize",
+    "sufficiency-review",
   ].includes(args[0]);
   if (needsOperation && !args.includes("--operation-id")) args = [...args, "--operation-id", `OP-${crypto.randomUUID()}`];
   const result = invoke(...args);
@@ -110,6 +111,31 @@ function pilotShaped(project, { tasks = true } = {}) {
 function readiness(project) {
   const result = invoke("execution-readiness", "--project-root", project, "--json");
   return JSON.parse(result.stdout);
+}
+
+/**
+ * Record a sufficiency review, so a test can say what the *rest* of readiness
+ * does once the semantic gate is satisfied.
+ *
+ * Deliberately minimal and deliberately real: it writes the same JSON a person
+ * would write and passes it to the same command, so a test cannot pass by
+ * agreeing with an internal shape nobody uses.
+ */
+function reviewed(project, { author = "User", conclusion = "SUFFICIENT", limits = [], contradictions = [], missing = [], verifications = [] } = {}) {
+  const file = path.join(project, `review-${crypto.randomUUID()}.json`);
+  fs.writeFileSync(file, JSON.stringify({
+    checked: ["Requirements against tasks", "Acceptance criteria", "Error paths"],
+    sources: ["the ledger"],
+    contradictions,
+    missing_decisions: missing,
+    error_cases_examined: ["the one the domain has"],
+    limits,
+    verifications_required: verifications,
+    conclusion,
+    author,
+  }, null, 2));
+  run("sufficiency-review", "--project-root", project, "--file", file, "--owner", "User");
+  return file;
 }
 
 function handoff(project) {
@@ -249,9 +275,28 @@ test("a non-software project passes without agents, repositories or tests", () =
       "--handoff", "at the witnessed hose test", "--owner", "User");
   run("checkpoint", "--project-root", project, "--id", "CHK-0001", "--name", "North slope complete", "--owner", "User");
 
-  const verdict = readiness(project);
-  assert.equal(verdict.execution.verdict, "PASSED",
-    `a roofing project failed execution readiness:\n${verdict.execution.findings.join("\n")}`);
+  /*
+   * Structurally complete, and not yet ready — because nobody has judged it.
+   *
+   * This used to assert PASSED, and it was right to: every structural part of
+   * a roofing plan is here. What changed is that structural completeness
+   * stopped being the whole answer. A plan nobody has read for sufficiency is
+   * NOT_READY, and the finding says so in those words rather than inventing a
+   * structural complaint.
+   */
+  const before = readiness(project);
+  assert.equal(before.execution.level, "NOT_READY", before.execution.findings.join("\n"));
+  assert.deepEqual(before.execution.causes.structural, [],
+    `a roofing project has a structural defect it should not have:\n${before.execution.causes.structural.join("\n")}`);
+  assert.equal(before.execution.causes.semantic.length, 1);
+  assert.match(before.execution.causes.semantic[0], /no sufficiency review is recorded/);
+
+  // And ready once somebody has. The engine does not grade the review; it
+  // records that one was made, by whom, and against which version of the plan.
+  reviewed(project, { author: "Surveyor", conclusion: "SUFFICIENT" });
+  const after = readiness(project);
+  assert.equal(after.execution.level, "READY", after.execution.findings.join("\n"));
+  assert.equal(after.execution.verdict, "PASSED");
 });
 
 // ---------------------------------------------------------------------------
@@ -273,8 +318,19 @@ test("requirements covered by verifiable tasks pass", () => {
   run("execution-org", "--project-root", project, "--executors", "1", "--mode", "agent",
       "--reviewer", "User", "--concurrency", "single writer", "--handoff", "on a green suite", "--owner", "User");
 
-  const verdict = readiness(project);
-  assert.equal(verdict.execution.verdict, "PASSED", verdict.execution.findings.join("\n"));
+  const before = readiness(project);
+  assert.equal(before.execution.level, "NOT_READY", "the semantic gate should be the only thing left");
+  assert.deepEqual(before.execution.causes.structural, [], before.execution.causes.structural.join("\n"));
+
+  // A LOW risk with an owner and no mitigation is not a blocker. Severity is
+  // the project's own statement of how much something matters, and a check
+  // that ignores it teaches people to record everything as LOW.
+  assert.ok(!before.execution.findings.join(" ").includes("RSK-0001"), "a LOW risk blocked readiness");
+
+  reviewed(project, { author: "User", conclusion: "SUFFICIENT" });
+  const after = readiness(project);
+  assert.equal(after.execution.verdict, "PASSED", after.execution.findings.join("\n"));
+  assert.equal(after.execution.level, "READY");
 });
 
 test("many generic tasks do not make coverage: the check is not a count", () => {

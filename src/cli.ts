@@ -712,7 +712,7 @@ function parseBlockSize(value: unknown, option: string): number {
   return count;
 }
 
-const BOOLEAN_FLAGS = new Set(["dry-run", "resume", "discard-changes", "accept-base-overwrite", "replace-human-next-action", "planned", "reconstructed", "regenerate", "open", "last", "json", "verify", "repair", "apply", "force", "crosscutting", "strict", "help", "migrate-backups", "remember", "definition-only", "execution", "parallelizable", "is-integrator", "is-reviewer"]);
+const BOOLEAN_FLAGS = new Set(["template", "dry-run", "resume", "discard-changes", "accept-base-overwrite", "replace-human-next-action", "planned", "reconstructed", "regenerate", "open", "last", "json", "verify", "repair", "apply", "force", "crosscutting", "strict", "help", "migrate-backups", "remember", "definition-only", "execution", "parallelizable", "is-integrator", "is-reviewer"]);
 
 /** Line separator used where a template literal would be harder to read. */
 const NL = "\n";
@@ -790,6 +790,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   "compat-check": ["project-root", "json", "writer-engine", "writer-version", "writer-schema", "writer-event-format", "writer-reads-formats"],
   "execution-intent": ["project-root", "definition-only", "execution", "reason", "owner", "operation-id"],
   "execution-org": ["project-root", "executors", "mode", "integrator", "reviewer", "concurrency", "handoff", "owner", "operation-id"],
+  "sufficiency-review": ["project-root", "file", "template", "owner", "json", "operation-id"],
   "read-record": ["project-root", "path", "purpose", "agent", "conclusions", "used-by", "owner", "operation-id"],
   govern: ["project-root", "exclude", "include", "reason", "owner", "operation-id"],
   migrate: ["project-root", "operation-id"],
@@ -7231,34 +7232,96 @@ function readStandings(root: string, state: State): { record: ReadRecord; standi
  * Also the command every other reader points at, so that a person told
  * "execution readiness: failed" has somewhere to go that explains it.
  */
+/**
+ * Where the project stands, and why, with the causes kept apart.
+ *
+ * It used to print two lines. A pilot with fourteen one-paragraph module
+ * documents, an approved decision naming an abandoned database, and acceptance
+ * criteria reading *Env ok* was told `execution readiness: passed` and nothing
+ * else — no findings, no limits, no statement of what had and had not been
+ * judged. Two lines of output is not a small presentation problem when one of
+ * them is a verdict somebody is about to build on.
+ *
+ * Exit codes are three, because the answer is three:
+ *   0  READY                 nothing blocks, and nothing was set aside.
+ *   1  CONDITIONALLY_READY   nothing blocks; the review named limits or
+ *                            verifications still owed. Usable, with eyes open.
+ *   2  NOT_READY             something blocks. The list says what.
+ */
 function executionReadinessCommand(flags: Flags): void {
   const root = resolveProject(required(flags, "project-root"));
   const state = validateRoot(root);
   const report = readinessReport(state, root);
+  const level = report.execution.level ?? (report.execution.verdict === "PASSED" ? "READY" : "NOT_READY");
+  const causes = report.execution.causes ?? { mechanical: [], structural: [], semantic: [], limits: [], verifications: [] };
+  const semantic = sufficiencyStatus(state);
 
   if (flags.json === true) {
     console.log(JSON.stringify({
       intent: report.intent,
+      level,
       definition: { verdict: report.definition.verdict, findings: report.definition.findings },
-      execution: { verdict: report.execution.verdict, findings: report.execution.findings },
+      execution: { verdict: report.execution.verdict, level, findings: report.execution.findings, causes },
+      sufficiency: {
+        recorded: semantic.present,
+        current: semantic.present && !semantic.stale,
+        conclusion: semantic.review?.conclusion ?? null,
+        author: semantic.review?.author ?? null,
+        reviewed_at: semantic.review?.reviewed_at ?? null,
+      },
     }, null, 2));
-    if (report.execution.verdict === "FAILED") reportedExitCode = 2;
+    reportedExitCode = level === "NOT_READY" ? 2 : level === "CONDITIONALLY_READY" ? 1 : 0;
     return;
   }
 
   console.log(readinessLines(report, "NOT ASSESSED").slice(0, 2).join("\n"));
+  console.log(`execution readiness level: ${level}`);
+
   if (report.definition.findings.length) {
     console.log(`\nDefinition:`);
     for (const line of report.definition.findings) console.log(`- ${line}`);
   }
-  if (report.execution.findings.length) {
-    console.log(`\nExecution readiness:`);
-    for (const line of report.execution.findings) console.log(`- ${line}`);
+
+  /*
+   * Four headings, and the headings are the message.
+   *
+   * A reader who sees twenty lines under one heading reads three of them. A
+   * reader who sees "mechanical integrity" and "nobody has judged this yet" as
+   * separate sections knows which one is theirs to fix.
+   */
+  const sections: [string, string[], string][] = [
+    ["Mechanical integrity", causes.mechanical, "Nothing recorded here can be relied on until these are closed."],
+    ["Structure", causes.structural, "Parts every plan needs, missing from this one."],
+    ["Semantic sufficiency", causes.semantic, "What the engine cannot judge, and nobody has."],
+    ["Accepted limits", causes.limits, "Recorded by the review. Not defects: what this plan does not cover."],
+    ["Still to be proven", causes.verifications, "Recorded by the review as owed before or during execution."],
+  ];
+  for (const [title, lines, note] of sections) {
+    if (!lines.length) continue;
+    console.log(`\n${title}:`);
+    for (const line of lines) console.log(`- ${line}`);
+    console.log(`  (${note})`);
   }
+
+  /*
+   * What was and was not judged, said even when everything passes.
+   *
+   * A verdict with no statement of its own scope is how "passed" became
+   * "validated in every respect" in a pilot report.
+   */
+  console.log(`\nWhat this verdict covers:`);
+  console.log(`- mechanical integrity: ${causes.mechanical.length ? `${causes.mechanical.length} failure${causes.mechanical.length === 1 ? "" : "s"}` : "sound"} — replay, and every recorded digest against its file (plangonaut validate --strict is the full check)`);
+  console.log(`- structural completeness: ${causes.structural.length ? `${causes.structural.length} finding${causes.structural.length === 1 ? "" : "s"}` : "complete"}`);
+  if (!semantic.present) {
+    console.log(`- semantic sufficiency: NOT ASSESSED. No review is recorded, so nothing here is a judgement about whether the plan is good enough to build.`);
+  } else if (semantic.stale) {
+    console.log(`- semantic sufficiency: EXPIRED. ${semantic.review?.author} reviewed a different version of this plan on ${semantic.review?.reviewed_at}.`);
+  } else {
+    console.log(`- semantic sufficiency: ${semantic.review?.conclusion}, attested by ${semantic.review?.author} on ${semantic.review?.reviewed_at}. The engine does not grade this judgement; it records whose it is.`);
+  }
+
   if (report.execution.remedy.length) console.log(`\n${report.execution.remedy.join("\n")}`);
-  if (report.execution.verdict === "FAILED") {
-    reportedExitCode = 2;
-  }
+  reportedExitCode = level === "NOT_READY" ? 2 : level === "CONDITIONALLY_READY" ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -8347,7 +8410,398 @@ function unprovenancedApprovals(state: State): string[] {
  * somebody's desktop.
  */
 
+// ---------------------------------------------------------------------------
+// The semantic sufficiency gate
+// ---------------------------------------------------------------------------
+
+/**
+ * What a deterministic engine cannot know, recorded by somebody who can.
+ *
+ * THE FAILURE THIS IS FOR
+ * -----------------------
+ * A real pilot reached `execution readiness: passed` with fourteen module
+ * outcome documents of one paragraph each, an approved decision naming a
+ * database the project had abandoned, an approved ORM that was never installed,
+ * an ACTIVE requirement for a keepalive job that had been deleted, acceptance
+ * criteria reading *Env ok* and *OTP pass*, and a HIGH risk carrying no
+ * treatment. Every structural check passed, because every structural check was
+ * satisfied: the documents existed, the fields were non-empty, the requirements
+ * had tasks.
+ *
+ * None of that is a bug in the structural checks. *Is this acceptance criterion
+ * meaningful* and *does this plan still describe this repository* are not
+ * questions a deterministic engine can answer, and pretending otherwise would
+ * put a judgement nobody can audit inside a tool whose whole value is that its
+ * answers are reproducible.
+ *
+ * TWO LEVELS, NOT ONE
+ * -------------------
+ * So the engine keeps doing what it can check and stops claiming the rest. What
+ * it can check about the part it cannot judge is whether a **review exists**,
+ * whether it is **current**, whether it is **governed**, and whether its
+ * conclusion **contradicts the ledger**. That is a real check with a real
+ * verdict, and it is the whole of this record's purpose.
+ *
+ * The engine never grades the review. A review saying *I checked everything and
+ * it is fine* passes the mechanical test and is worth exactly what its author
+ * is worth — which is the honest position, and is why the author, the date, the
+ * sources and the digest are all required and all recorded.
+ *
+ * ONE RECORD, NOT A SECOND SYSTEM
+ * -------------------------------
+ * It is a single object in the ledger, written by one command, in the same
+ * shape as `execution_organization`: approved by an owner, carrying an
+ * operation id, committed as an event, replayed like everything else. No new
+ * store, no new file format, no parallel index.
+ */
+interface SufficiencyContradiction {
+  description: string;
+  sources: string[];
+  reconciled: boolean;
+  resolution?: string;
+}
+
+interface SufficiencyMissingDecision {
+  topic: string;
+  why_required: string;
+}
+
+interface SufficiencyReview {
+  checked: string[];
+  sources: string[];
+  contradictions: SufficiencyContradiction[];
+  missing_decisions: SufficiencyMissingDecision[];
+  error_cases_examined: string[];
+  limits: string[];
+  verifications_required: string[];
+  conclusion: "SUFFICIENT" | "SUFFICIENT_WITH_LIMITS" | "INSUFFICIENT";
+  author: string;
+  reviewed_at: string;
+  /** The ledger this review looked at, so a later change can expire it. */
+  subject_digest: string;
+  evidence_digest: string;
+  operation_id: string;
+}
+
+const SUFFICIENCY_CONCLUSIONS = new Set(["SUFFICIENT", "SUFFICIENT_WITH_LIMITS", "INSUFFICIENT"]);
+
+/**
+ * A digest of the things a sufficiency review was about.
+ *
+ * Not `state.revision`. A review is not made wrong by a checkpoint, a forecast
+ * or a question being logged, and expiring it on every write would train people
+ * to re-stamp it without reading anything — which is worse than no gate at all.
+ *
+ * It covers what a reviewer's conclusion actually rests on: what the project
+ * must do, what was decided, what will be built, in what order, what is at
+ * risk, which modules are settled against which documents, and who executes it.
+ * Changing any of those invalidates a judgement made before the change, and is
+ * meant to.
+ */
+function sufficiencySubjectDigest(state: State): string {
+  const canonical = {
+    requirements: (state.requirements ?? []).map((item: any) => [item.id, item.status, item.title]).sort(),
+    decisions: (state.decisions ?? []).map((item: any) => [item.id, item.status, item.title]).sort(),
+    tasks: (state.tasks ?? []).map((item: any) => [
+      item.id, item.status, item.title, item.kind ?? "", item.acceptance ?? "",
+      item.verification ?? "", item.evidence_expected ?? "", (item.requirements ?? []).join(","),
+    ]).sort(),
+    dependencies: (state.dependencies ?? []).map((item: any) => [item.id, item.from, item.to, item.type]).sort(),
+    risks: (state.risks ?? []).map((item: any) => [item.id, item.status, item.severity, item.title, item.mitigation ?? ""]).sort(),
+    modules: (state.modules ?? []).map((item: any) => [String(item.id), item.status, item.answer_sha256 ?? item.evidence_sha256 ?? ""]).sort(),
+    artifacts: (state.artifacts ?? []).map((item: any) => [item.id, item.path ?? item.base_path ?? "", item.sha256 ?? ""]).sort(),
+    execution_intent: state.execution_intent?.mode ?? null,
+    execution_organization: state.execution_organization
+      ? [
+          state.execution_organization.executors,
+          state.execution_organization.mode ?? "",
+          state.execution_organization.reviewer ?? "",
+          state.execution_organization.integrator ?? "",
+          state.execution_organization.concurrency ?? "",
+          state.execution_organization.handoff ?? "",
+        ]
+      : null,
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
+/** What the recorded review is worth right now. */
+interface SufficiencyStatus {
+  present: boolean;
+  stale: boolean;
+  review: SufficiencyReview | null;
+  /** Reasons the semantic gate does not pass, in the order found. */
+  blockers: string[];
+  /** Limits the review declared and the project has accepted. */
+  limits: string[];
+  /** Verifications the review says are still owed. */
+  verifications: string[];
+}
+
+function sufficiencyStatus(state: State): SufficiencyStatus {
+  const review = (state as any).sufficiency_review as SufficiencyReview | undefined;
+  if (!review) {
+    return {
+      present: false,
+      stale: false,
+      review: null,
+      blockers: [
+        `no sufficiency review is recorded. The engine can check that a plan is mechanically sound and structurally complete; ` +
+        `whether it is *enough* — whether its acceptance criteria verify anything, whether its decisions still describe the ` +
+        `project, whether the error cases were thought about — is a judgement, and nothing in this folder claims to have made it. ` +
+        `Record one with plangonaut sufficiency-review; plangonaut sufficiency-review --template writes the empty form.`,
+      ],
+      limits: [],
+      verifications: [],
+    };
+  }
+
+  const blockers: string[] = [];
+  const current = sufficiencySubjectDigest(state);
+  const stale = review.subject_digest !== current;
+  if (stale) {
+    blockers.push(
+      `the sufficiency review is out of date. It was made against a different plan: requirements, decisions, tasks, ` +
+      `dependencies, risks, modules or the execution organisation have changed since ${review.reviewed_at}. ` +
+      `A judgement about a plan is not a judgement about the plan that replaced it. Review the changes and record it again.`
+    );
+  }
+
+  if (review.conclusion === "INSUFFICIENT") {
+    blockers.push(`the sufficiency review concludes INSUFFICIENT. Its author (${review.author}) did not find this plan enough to build from.`);
+  }
+
+  const unreconciled = (review.contradictions ?? []).filter((item) => !item.reconciled);
+  for (const contradiction of unreconciled) {
+    blockers.push(
+      `an unreconciled contradiction is recorded: ${contradiction.description}` +
+      (contradiction.sources?.length ? ` (${contradiction.sources.join(", ")})` : "") +
+      `. Two sources disagree and nobody has said which prevails.`
+    );
+  }
+
+  for (const missing of review.missing_decisions ?? []) {
+    blockers.push(`an operational decision is missing: ${missing.topic} — ${missing.why_required}`);
+  }
+
+  return {
+    present: true,
+    stale,
+    review,
+    blockers,
+    limits: review.limits ?? [],
+    verifications: review.verifications_required ?? [],
+  };
+}
+
+/**
+ * Record a sufficiency review.
+ *
+ * The file is JSON because the record is structured and a reviewer filling in
+ * ten flags on a command line would leave nine of them empty. `--template`
+ * prints the empty form with every field and what it is for, which is the
+ * difference between a gate somebody can pass and a gate somebody guesses at.
+ */
+function sufficiencyReviewCommand(flags: Flags): void {
+  if (flags.template === true) {
+    console.log(JSON.stringify({
+      $comment: [
+        "A sufficiency review. The engine checks that this exists, is current, is governed, and does not",
+        "contradict the ledger. It does not grade it: what it is worth is what its author is worth.",
+        "",
+        "checked                what you actually examined, one line each. Not what you intended to examine.",
+        "sources                every file, record id or external source the review rests on.",
+        "contradictions         disagreements found. reconciled:false blocks readiness until somebody decides.",
+        "missing_decisions      operational decisions the work cannot start without. Each one blocks.",
+        "error_cases_examined   the failure paths you thought about. An empty list is a claim too.",
+        "limits                 what this plan does NOT cover, and the project accepts. These make it",
+        "                       CONDITIONALLY_READY rather than READY, which is the honest outcome.",
+        "verifications_required what still has to be proven before or during execution.",
+        "conclusion             SUFFICIENT, SUFFICIENT_WITH_LIMITS, or INSUFFICIENT.",
+        "author                 who made this judgement. A name, not a role.",
+      ],
+      checked: [],
+      sources: [],
+      contradictions: [{ description: "", sources: [], reconciled: false, resolution: "" }],
+      missing_decisions: [{ topic: "", why_required: "" }],
+      error_cases_examined: [],
+      limits: [],
+      verifications_required: [],
+      conclusion: "INSUFFICIENT",
+      author: "",
+    }, null, 2));
+    return;
+  }
+
+  const root = resolveProject(required(flags, "project-root"));
+  const key = idempotencyKey(flags);
+  if (checkIdempotency(root, key)) return console.log("Idempotent retry: this review is already recorded.");
+  const { location, state } = loadState(root);
+  assertNotBlocked(state);
+  const owner = required(flags, "owner").trim();
+  assertKnownOwner(state, owner);
+
+  const filePath = path.resolve(required(flags, "file"));
+  if (!fs.existsSync(filePath)) throw new PlangonautError(`Review file not found: ${filePath}. Nothing was written.`);
+  const raw = fs.readFileSync(filePath, "utf8");
+  let parsed: any;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error: any) {
+    throw new PlangonautError(`Review file is not valid JSON: ${error.message}. Nothing was written.`);
+  }
+
+  const asList = (value: unknown, field: string): string[] => {
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+      throw new PlangonautError(`${field} must be a list of strings. Nothing was written.`);
+    }
+    return value.map((item) => item.trim()).filter((item) => item.length > 0);
+  };
+
+  const conclusion = String(parsed.conclusion ?? "").toUpperCase();
+  if (!SUFFICIENCY_CONCLUSIONS.has(conclusion)) {
+    throw new PlangonautError(
+      `conclusion must be one of: ${[...SUFFICIENCY_CONCLUSIONS].join(", ")}. Nothing was written.`
+    );
+  }
+  const author = String(parsed.author ?? "").trim();
+  if (!author) throw new PlangonautError(`author is required: a judgement belongs to somebody. Nothing was written.`);
+
+  const checked = asList(parsed.checked, "checked");
+  if (!checked.length) {
+    throw new PlangonautError(
+      `checked is empty. A review that does not say what it looked at cannot be read by the person who inherits it, ` +
+      `and cannot be distinguished from one nobody did. Nothing was written.`
+    );
+  }
+  const sources = asList(parsed.sources, "sources");
+  if (!sources.length) {
+    throw new PlangonautError(`sources is empty: a review rests on something. Nothing was written.`);
+  }
+
+  /*
+   * A blank template row is not a finding.
+   *
+   * The template ships one empty contradiction and one empty missing decision
+   * so the shape is obvious. Recorded as written they would block readiness for
+   * ever with an empty description, so they are dropped rather than refused.
+   */
+  const contradictions: SufficiencyContradiction[] = (Array.isArray(parsed.contradictions) ? parsed.contradictions : [])
+    .filter((item: any) => item && String(item.description ?? "").trim().length > 0)
+    .map((item: any) => ({
+      description: String(item.description).trim(),
+      sources: Array.isArray(item.sources) ? item.sources.map((source: any) => String(source)) : [],
+      reconciled: item.reconciled === true,
+      ...(String(item.resolution ?? "").trim() ? { resolution: String(item.resolution).trim() } : {}),
+    }));
+  for (const contradiction of contradictions) {
+    if (contradiction.reconciled && !contradiction.resolution) {
+      throw new PlangonautError(
+        `a contradiction is marked reconciled with no resolution: "${contradiction.description}". ` +
+        `Reconciled means somebody decided which source prevails, and the decision is the part worth keeping. Nothing was written.`
+      );
+    }
+  }
+
+  const missingDecisions: SufficiencyMissingDecision[] = (Array.isArray(parsed.missing_decisions) ? parsed.missing_decisions : [])
+    .filter((item: any) => item && String(item.topic ?? "").trim().length > 0)
+    .map((item: any) => ({
+      topic: String(item.topic).trim(),
+      why_required: String(item.why_required ?? "").trim(),
+    }));
+
+  const limits = asList(parsed.limits, "limits");
+  if (conclusion === "SUFFICIENT_WITH_LIMITS" && !limits.length) {
+    throw new PlangonautError(
+      `conclusion is SUFFICIENT_WITH_LIMITS and limits is empty. The limits are the point of that conclusion: ` +
+      `without them it is SUFFICIENT with a hedge nobody can act on. Nothing was written.`
+    );
+  }
+  if (conclusion === "SUFFICIENT" && limits.length) {
+    throw new PlangonautError(
+      `conclusion is SUFFICIENT and ${limits.length} limit${limits.length === 1 ? " is" : "s are"} recorded. ` +
+      `A plan with stated limits is SUFFICIENT_WITH_LIMITS, which readiness reports as conditionally ready. Nothing was written.`
+    );
+  }
+
+  const timestamp = now();
+  const eventId = crypto.randomUUID();
+  const review: SufficiencyReview = {
+    checked,
+    sources,
+    contradictions,
+    missing_decisions: missingDecisions,
+    error_cases_examined: asList(parsed.error_cases_examined, "error_cases_examined"),
+    limits,
+    verifications_required: asList(parsed.verifications_required, "verifications_required"),
+    conclusion: conclusion as SufficiencyReview["conclusion"],
+    author,
+    reviewed_at: timestamp,
+    subject_digest: sufficiencySubjectDigest(state),
+    evidence_digest: crypto.createHash("sha256").update(raw).digest("hex"),
+    operation_id: String(flags["operation-id"] ?? ""),
+  };
+  (state as any).sufficiency_review = review;
+  state.updated_at = timestamp;
+  const revision = state.revision + 1;
+  state.revision = revision;
+  state.last_event_id = eventId;
+  commitState(root, location, state, {
+    event_id: eventId,
+    type: "SUFFICIENCY_REVIEWED",
+    state_revision: revision,
+    at: timestamp,
+    idempotency_key: key,
+    owner,
+    author,
+    conclusion: review.conclusion,
+    subject_digest: review.subject_digest,
+    evidence_digest: review.evidence_digest,
+  });
+
+  console.log(`Recorded a sufficiency review by ${author}: ${review.conclusion}.`);
+  if (contradictions.filter((item) => !item.reconciled).length) {
+    console.log(`${contradictions.filter((item) => !item.reconciled).length} contradiction(s) are unreconciled and block execution readiness.`);
+  }
+  if (missingDecisions.length) console.log(`${missingDecisions.length} operational decision(s) are missing and block execution readiness.`);
+  if (limits.length) console.log(`${limits.length} limit(s) recorded: readiness will report conditionally ready, not ready.`);
+  console.log(`plangonaut execution-readiness --project-root . says where the project now stands.`);
+}
+
 type ReadinessVerdict = "PASSED" | "FAILED" | "NOT REQUESTED" | "NOT ASSESSED";
+
+/**
+ * Three answers, because two were not enough.
+ *
+ * `PASSED` and `FAILED` made every gap the same size. A project whose plan is
+ * sound and whose reviewer has written down two things it deliberately does not
+ * cover is not in the same state as one whose acceptance criteria say *Env ok*,
+ * and reporting both as `FAILED` teaches a reader to argue with the tool while
+ * reporting both as `PASSED` is how a pilot was declared ready to build.
+ */
+type ReadinessLevel = "NOT_READY" | "CONDITIONALLY_READY" | "READY" | "NOT_REQUESTED" | "NOT_ASSESSED";
+
+/**
+ * Why it is not ready, kept apart by the kind of thing that would fix it.
+ *
+ * A digest that no longer matches its file, a task with no acceptance
+ * criterion, and a reviewer's judgement that the payment flow was never thought
+ * about are three different problems with three different remedies, and a
+ * single list of findings makes them look like one queue of chores.
+ */
+interface ReadinessCauses {
+  /** Integrity: the record cannot be relied on at all. */
+  mechanical: string[];
+  /** The plan is missing a part every plan needs. */
+  structural: string[];
+  /** Nobody has judged whether the plan is enough, or the judgement expired. */
+  semantic: string[];
+  /** What the review says this plan does not cover, and the project accepts. */
+  limits: string[];
+  /** What the review says still has to be proven. */
+  verifications: string[];
+}
 
 interface Readiness {
   verdict: ReadinessVerdict;
@@ -8355,6 +8809,9 @@ interface Readiness {
   findings: string[];
   /** What would close the findings, for a reader who now has to act. */
   remedy: string[];
+  /** The three-state answer. `verdict` stays for readers that predate it. */
+  level?: ReadinessLevel;
+  causes?: ReadinessCauses;
 }
 
 /** Statuses that mean a module has been dealt with one way or another. */
@@ -8441,7 +8898,7 @@ function definitionReadiness(state: State): Readiness {
 function executionReadiness(state: State): Readiness {
   const requested = executionRequested(state);
   if (requested === "NO") {
-    return { verdict: "NOT REQUESTED", findings: [], remedy: [] };
+    return { verdict: "NOT REQUESTED", findings: [], remedy: [], level: "NOT_REQUESTED", causes: { mechanical: [], structural: [], semantic: [], limits: [], verifications: [] } };
   }
   if (requested === "UNDECLARED") {
     /*
@@ -8453,6 +8910,8 @@ function executionReadiness(state: State): Readiness {
      */
     return {
       verdict: "NOT ASSESSED",
+      level: "NOT_ASSESSED",
+      causes: { mechanical: [], structural: [`nobody has declared whether this project is meant to be built.`], semantic: [], limits: [], verifications: [] },
       findings: [`nobody has declared whether this project is meant to be built.`],
       remedy: [
         `If it is: plangonaut execution-intent --project-root . --execution --reason "<why>" --owner <owner> --operation-id <id>`,
@@ -8544,12 +9003,108 @@ function executionReadiness(state: State): Readiness {
   // 7. Where to start.
   if (!nonEmpty(state.exact_next_action)) findings.push(`no exact next action is recorded, so the folder does not say how to begin.`);
 
+  /*
+   * 8. A risk somebody owns and nobody is carrying.
+   *
+   * An owner is who answers for it. A treatment is what is being done about it.
+   * The pilot recorded one HIGH risk — an external API changing without notice —
+   * with an owner and no mitigation, and readiness passed: the check asked who,
+   * never what.
+   */
+  for (const risk of state.risks ?? []) {
+    const status = String(risk.status ?? "").toUpperCase();
+    if (status === "MITIGATED" || status === "ACCEPTED" || status === "CLOSED") continue;
+    const severity = String(risk.severity ?? "").toUpperCase();
+    /*
+     * Severity is the project's own statement of how much a risk matters, and
+     * a check that treats LOW the same as CRITICAL has stopped reading it —
+     * and teaches people to record everything as LOW. So the block is the top
+     * two, and the rest stay visible in the ledger where they were written.
+     */
+    if (severity !== "HIGH" && severity !== "CRITICAL") continue;
+    if (!nonEmpty((risk as any).mitigation)) {
+      findings.push(
+        `risk ${risk.id} is ${severity} and has no recorded treatment: ${risk.title}. ` +
+        `Record a mitigation, or record it as ACCEPTED — which is a decision, and is recorded as one.`
+      );
+    }
+  }
+
+  /*
+   * 9. Work nobody can verify.
+   *
+   * `taskIsUnderspecified` reports a task only when two of its four parts are
+   * missing, which was right while the check was about tasks that were barely
+   * written down. It let through every task with a title, an owner, a
+   * requirement and the word "acceptance" filled in with anything at all. A
+   * task with no way to tell whether it is done is not half-specified.
+   */
+  for (const task of tasks) {
+    if (ADMINISTRATIVE_KINDS.has(String(task.kind ?? "").toUpperCase())) continue;
+    if (!nonEmpty(task.acceptance)) {
+      findings.push(`task ${task.id} has no acceptance criterion: nothing says when it is done.`);
+    }
+    if (!nonEmpty(task.verification) && !nonEmpty(task.evidence_expected)) {
+      findings.push(`task ${task.id} records neither a verification nor the evidence it should produce: nothing says how anybody would know.`);
+    }
+  }
+
+  /*
+   * 10. Decisions still proposed.
+   *
+   * A task built on a proposal is a task built on somebody's suggestion. This
+   * is deliberately about decisions a task or a requirement depends on rather
+   * than every proposal in the ledger: a project is allowed to be thinking
+   * about something it is not building yet.
+   */
+  const dependedOn = new Set<string>();
+  for (const task of tasks) for (const id of (task as any).decisions ?? []) dependedOn.add(String(id).toUpperCase());
+  for (const decision of state.decisions ?? []) {
+    if (String(decision.status).toUpperCase() !== "PROPOSED") continue;
+    if (!dependedOn.has(String(decision.id).toUpperCase())) continue;
+    findings.push(`decision ${decision.id} is still PROPOSED and work depends on it: ${decision.title}`);
+  }
+
+  const structural = [...findings];
+  const semantic = sufficiencyStatus(state);
+
+  /*
+   * The level.
+   *
+   * Structural blockers and semantic blockers both mean NOT_READY: a plan with
+   * an unverifiable task and a plan nobody has judged are both plans nobody
+   * should start from. What separates CONDITIONALLY_READY from READY is
+   * narrower and is the reviewer's own statement — limits they recorded, or
+   * verifications they say are still owed. Those are not defects; they are the
+   * shape of an honest plan, and a tool that refused them would be asking for a
+   * certainty no project has.
+   */
+  const blocking = [...structural, ...semantic.blockers];
+  const level: ReadinessLevel = blocking.length
+    ? "NOT_READY"
+    : semantic.limits.length || semantic.verifications.length
+      ? "CONDITIONALLY_READY"
+      : "READY";
+
+  const all = [...blocking];
+  for (const limit of semantic.limits) all.push(`accepted limit: ${limit}`);
+  for (const verification of semantic.verifications) all.push(`still to be proven: ${verification}`);
+
   return {
-    verdict: findings.length ? "FAILED" : "PASSED",
-    findings,
-    remedy: findings.length
+    verdict: blocking.length ? "FAILED" : "PASSED",
+    findings: all,
+    level,
+    causes: {
+      mechanical: [],
+      structural,
+      semantic: semantic.blockers,
+      limits: semantic.limits,
+      verifications: semantic.verifications,
+    },
+    remedy: blocking.length
       ? [
-          `These are answered by the operational interview and the work breakdown, not by more definition.`,
+          `Structural findings are answered by the operational interview and the work breakdown.`,
+          `Semantic findings are answered by a review: plangonaut sufficiency-review --template shows the form.`,
           `plangonaut next --project-root . proposes the first of them.`,
         ]
       : [],
@@ -8622,14 +9177,39 @@ function readinessReport(state: State, root?: string): ReadinessReport {
    * Where it is known, this runs.
    */
   if (root !== undefined) {
+    /*
+     * A recorded digest that no longer matches its file.
+     *
+     * `validate --strict` reports these and readiness did not, so a project
+     * whose fourteen module documents had all been edited after being recorded
+     * was told its integrity was sound. The engine held two answers about the
+     * same folder and showed whichever one was asked for.
+     */
+    try {
+      for (const drift of recordedDigestErrors(root, state)) {
+        execution.findings.unshift(drift);
+        if (execution.causes) execution.causes.mechanical.push(drift);
+        execution.verdict = execution.verdict === "NOT REQUESTED" ? "NOT REQUESTED" : "FAILED";
+        if (execution.level && execution.level !== "NOT_REQUESTED" && execution.level !== "NOT_ASSESSED") {
+          execution.level = "NOT_READY";
+        }
+      }
+    } catch {
+      // A folder this cannot read is reported by the integrity check below,
+      // which is the one that exists to say so.
+    }
     const diagnosis = integrityDiagnosis(root);
     if (!diagnosis.sound && diagnosis.defect) {
       const defect = diagnosis.defect;
-      execution.findings.unshift(
+      const sentence =
         `mechanical integrity has failed (${defect.category}${defect.line > 0 ? `, line ${defect.line}` : ""}), so nothing recorded in this project can be relied on. ` +
-        `This is not a priority call and no decision can waive it.`
-      );
+        `This is not a priority call and no decision can waive it.`;
+      execution.findings.unshift(sentence);
+      if (execution.causes) execution.causes.mechanical.push(sentence);
       execution.verdict = execution.verdict === "NOT REQUESTED" ? "NOT REQUESTED" : "FAILED";
+      if (execution.level && execution.level !== "NOT_REQUESTED" && execution.level !== "NOT_ASSESSED") {
+        execution.level = "NOT_READY";
+      }
     }
   }
   return {
@@ -15084,6 +15664,7 @@ export async function main(argv: string[]): Promise<number> {
     else if (command === "compat-check") compatCheck(flags);
     else if (command === "execution-intent") executionIntent(flags);
     else if (command === "execution-org") executionOrg(flags);
+    else if (command === "sufficiency-review") sufficiencyReviewCommand(flags);
     else if (command === "read-record") readRecord(flags);
     else if (command === "govern") govern(flags);
     else if (command === "migrate-brand") migrateBrand(flags);
